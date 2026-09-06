@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { ApiError, del, get, patch, post } from "./api";
+import { ApiError, get, patch, post } from "./api";
 import type {
   AdminUser,
   JobDetail,
@@ -18,7 +18,8 @@ interface UsersState {
   load: () => Promise<void>;
   create: (username: string, role: Role, hostId: number) => Promise<void>;
   setRole: (id: number, role: Role) => Promise<void>;
-  remove: (id: number) => Promise<void>;
+  disable: (id: number) => Promise<void>;
+  enable: (id: number) => Promise<void>;
   resetPassword: (id: number) => Promise<void>;
   provision: (id: number, hostId: number) => Promise<void>;
   job: (id: number) => Promise<JobDetail>;
@@ -95,16 +96,37 @@ export const useUsersStore = create<UsersState>((set) => ({
     }
   },
 
-  remove: async (id) => {
+  disable: async (id) => {
     set({ busy: true, actionError: null });
     try {
-      await del(`/api/users/${id}`);
-      set((s) => ({
-        users: s.users.filter((u) => u.id !== id),
-        busy: false,
-      }));
+      await post<{ provisioning: ProvisionInfo | null }>(`/api/users/${id}/disable`);
+      set({ busy: false });
+      await refreshUsers(set);
     } catch (err) {
-      set({ busy: false, actionError: await msg(err, "failed to delete user") });
+      set({ busy: false, actionError: await msg(err, "failed to disable user") });
+    }
+  },
+
+  enable: async (id) => {
+    set({ busy: true, actionError: null });
+    try {
+      const data = await post<{
+        user: AdminUser;
+        password: string;
+        provisioning: ProvisionInfo | null;
+      }>(`/api/users/${id}/enable`);
+      set({
+        busy: false,
+        reveal: {
+          user: data.user,
+          password: data.password,
+          kind: "enable",
+          provisioning: data.provisioning,
+        },
+      });
+      await refreshUsers(set);
+    } catch (err) {
+      set({ busy: false, actionError: await msg(err, "failed to enable user") });
     }
   },
 

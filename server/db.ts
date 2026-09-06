@@ -21,6 +21,7 @@ export interface User {
   username: string;
   password_hash: string;
   role: Role;
+  enabled: number;
   created_at: string;
 }
 
@@ -82,6 +83,7 @@ export const SCHEMA = `
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -144,8 +146,17 @@ export function openDb(): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  migrate(db);
   fixPermissions();
   return db;
+}
+
+// Additive migrations for databases created before a column existed.
+function migrate(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "enabled")) {
+    db.exec("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1");
+  }
 }
 
 let sharedDb: Database.Database | undefined;
@@ -223,6 +234,7 @@ export function listUsers(db: Database.Database): PublicUser[] {
 }
 
 export interface AdminUserRow extends PublicUser {
+  enabled: number;
   account: {
     hostId: number;
     hostName: string;
@@ -232,6 +244,7 @@ export interface AdminUserRow extends PublicUser {
 }
 
 export interface AccountJoinRow extends PublicUser {
+  enabled: number;
   host_id: number | null;
   host_name: string | null;
   host_role: HostRole | null;
@@ -241,7 +254,7 @@ export interface AccountJoinRow extends PublicUser {
 export function listUsersWithAccounts(db: Database.Database): AccountJoinRow[] {
   return db
     .prepare(
-      `SELECT u.id, u.username, u.role, u.created_at,
+      `SELECT u.id, u.username, u.role, u.enabled, u.created_at,
               a.host_id, h.name AS host_name, h.role AS host_role, a.status AS account_status
        FROM users u
        LEFT JOIN accounts a ON a.user_id = u.id
@@ -256,6 +269,7 @@ export function toAdminRows(rows: AccountJoinRow[]): AdminUserRow[] {
     id: r.id,
     username: r.username,
     role: r.role,
+    enabled: r.enabled,
     created_at: r.created_at,
     account:
       r.host_id != null
@@ -303,8 +317,14 @@ export function createUser(
   };
 }
 
-export function deleteUser(db: Database.Database, id: number): boolean {
-  const info = db.prepare("DELETE FROM users WHERE id = ?").run(id);
+export function setUserEnabled(
+  db: Database.Database,
+  id: number,
+  enabled: boolean,
+): boolean {
+  const info = db
+    .prepare("UPDATE users SET enabled = ? WHERE id = ?")
+    .run(enabled ? 1 : 0, id);
   return info.changes > 0;
 }
 
@@ -350,7 +370,7 @@ export function getSessionUser(
        WHERE s.token_hash = ?`,
     )
     .get(tokenHash) as
-    | { token_hash: string; expires_at: number; id: number; username: string; password_hash: string; role: Role; created_at: string }
+    | { token_hash: string; expires_at: number; id: number; username: string; password_hash: string; role: Role; enabled: number; created_at: string }
     | undefined;
   if (!row) return undefined;
   const { token_hash, expires_at, ...u } = row;

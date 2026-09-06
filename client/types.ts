@@ -25,6 +25,7 @@ export interface AccountInfo {
 }
 
 export interface AdminUser extends User {
+  enabled: number;
   account: AccountInfo | null;
 }
 
@@ -39,7 +40,7 @@ export interface ProvisionInfo {
 export interface PasswordReveal {
   user: User;
   password: string;
-  kind: "create" | "reset" | "provision";
+  kind: "create" | "reset" | "provision" | "enable";
   provisioning?: ProvisionInfo | null;
 }
 

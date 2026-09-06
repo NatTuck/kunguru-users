@@ -63,7 +63,11 @@ export function resolveSession(req: Request): SessionContext | null {
   if (!token) return null;
   const tokenHash = sha256(token);
   const found = getSessionUser(db, tokenHash);
-  if (!found || found.session.expires_at <= Date.now()) {
+  if (
+    !found ||
+    found.session.expires_at <= Date.now() ||
+    !found.user.enabled
+  ) {
     if (found) deleteSession(db, tokenHash);
     return null;
   }
@@ -119,7 +123,7 @@ export async function loginHandler(
   const db = getDb();
   const user = getUserByUsername(db, username);
   const ok = user ? await verifyPassword(user.password_hash, password) : false;
-  if (!ok || !user) {
+  if (!ok || !user || !user.enabled) {
     noteLoginFailure(username);
     // Generic message; do not reveal whether the user exists.
     res.status(401).json({ error: "invalid username or password" });

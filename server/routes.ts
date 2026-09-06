@@ -2,7 +2,6 @@ import { Router } from "express";
 import {
   countAdmins,
   createUser,
-  deleteUser,
   generatePassword,
   getAccountForUser,
   getDb,
@@ -13,6 +12,7 @@ import {
   listHosts,
   listJobsForUser,
   listUsersWithAccounts,
+  setUserEnabled,
   setUserRole,
   toAdminRows,
   updateUserPasswordHash,
@@ -191,6 +191,10 @@ api.patch("/users/:id/role", requireAuth, requireAdmin, (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  if (!target.enabled) {
+    res.status(400).json({ error: "user is disabled; enable it first" });
+    return;
+  }
   if (id === currentUserId(res)) {
     res.status(400).json({ error: "you cannot change your own role" });
     return;
@@ -203,7 +207,10 @@ api.patch("/users/:id/role", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-api.delete("/users/:id", requireAuth, requireAdmin, (req, res) => {
+// Disable a user: blocks app login and Snikket login by randomizing the XMPP
+// credential (the account is kept, never removed; Linux accounts have no
+// password to disable). Re-enabling issues a fresh shared password.
+api.post("/users/:id/disable", requireAuth, requireAdmin, async (req, res) => {
   const id = parseId(req.params.id);
   if (id == null) {
     res.status(400).json({ error: "invalid id" });
@@ -216,15 +223,93 @@ api.delete("/users/:id", requireAuth, requireAdmin, (req, res) => {
     return;
   }
   if (id === currentUserId(res)) {
-    res.status(400).json({ error: "you cannot delete your own account" });
+    res.status(400).json({ error: "you cannot disable your own account" });
     return;
   }
   if (target.role === "admin" && countAdmins(db) <= 1) {
-    res.status(400).json({ error: "cannot delete the last admin" });
+    res.status(400).json({ error: "cannot disable the last admin" });
     return;
   }
-  deleteUser(db, id);
-  res.json({ ok: true });
+  if (!target.enabled) {
+    res.status(400).json({ error: "user is already disabled" });
+    return;
+  }
+
+  setUserEnabled(db, id, false);
+
+  // Keep the Snikket account (identity/affiliation) but neutralize it by
+  // randomizing its password. The random value is never shown or stored.
+  let provisioning: unknown = null;
+  const account = getAccountForUser(db, id);
+  if (account) {
+    try {
+      const result = await syncSnikketPassword({
+        user: { id: target.id, username: target.username },
+        password: generatePassword(),
+        createdBy: currentUserId(res) ?? null,
+      });
+      provisioning = toProvisionView(result);
+    } catch (err) {
+      provisioning = {
+        ok: false,
+        message: err instanceof Error ? err.message : "failed to randomize snikket password",
+      };
+    }
+  }
+
+  res.json({
+    user: { id: target.id, username: target.username, role: target.role, enabled: 0 },
+    provisioning,
+  });
+});
+
+// Re-enable a user: issues a new shared password and re-applies it to Snikket
+// (Linux account is untouched). The new password is shown exactly once.
+api.post("/users/:id/enable", requireAuth, requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const db = getDb();
+  const target = getUserById(db, id);
+  if (!target) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (target.enabled) {
+    res.status(400).json({ error: "user is already enabled" });
+    return;
+  }
+
+  const password = generatePassword();
+  updateUserPasswordHash(db, id, await hashPassword(password));
+  setUserEnabled(db, id, true);
+
+  let provisioning: unknown = null;
+  const account = getAccountForUser(db, id);
+  if (account) {
+    try {
+      const result = await provisionStandardAccount({
+        user: { id: target.id, username: target.username },
+        hostId: account.host_id,
+        password,
+        createdBy: currentUserId(res) ?? null,
+      });
+      provisioning = toProvisionView(result);
+    } catch (err) {
+      provisioning = {
+        ok: false,
+        message: err instanceof Error ? err.message : "snikket password sync failed",
+      };
+    }
+  }
+
+  res.json({
+    user: { id: target.id, username: target.username, role: target.role, enabled: 1 },
+    password,
+    provisioning,
+  });
 });
 
 // Provision a user (or re-provision an existing account) on a host. Because the
@@ -240,6 +325,10 @@ api.post("/users/:id/provision", requireAuth, requireAdmin, async (req, res) => 
   const target = getUserById(db, id);
   if (!target) {
     res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (!target.enabled) {
+    res.status(400).json({ error: "user is disabled; enable it first" });
     return;
   }
 
@@ -283,6 +372,10 @@ api.post("/users/:id/reset-password", requireAuth, requireAdmin, async (req, res
   const target = getUserById(db, id);
   if (!target) {
     res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (!target.enabled) {
+    res.status(400).json({ error: "user is disabled; enable it first" });
     return;
   }
   const password = generatePassword();

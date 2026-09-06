@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useAuthStore } from "./authStore";
 import { useHostsStore } from "./hostsStore";
@@ -24,7 +24,8 @@ export default function UsersPage() {
     load,
     create,
     setRole,
-    remove,
+    disable,
+    enable,
     resetPassword,
     provision,
     clearReveal,
@@ -39,7 +40,7 @@ export default function UsersPage() {
   const [username, setUsername] = useState("");
   const [role, setRoleChoice] = useState<Role>("user");
   const [hostId, setHostId] = useState<number | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [confirmDisable, setConfirmDisable] = useState<number | null>(null);
   const [provisionFor, setProvisionFor] = useState<AdminUser | null>(null);
   const [provisionHost, setProvisionHost] = useState<number | null>(null);
   const [jobOpen, setJobOpen] = useState<JobDetail | null>(null);
@@ -47,11 +48,6 @@ export default function UsersPage() {
   useEffect(() => {
     if (hostId == null && hosts.length > 0) setHostId(hosts[0].id);
   }, [hosts, hostId]);
-
-  const defaultHostLabel = useMemo(
-    () => (hosts.length ? `${hosts[0].name} (${hosts[0].role})` : ""),
-    [hosts],
-  );
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -141,7 +137,10 @@ export default function UsersPage() {
                 <tr key={u.id}>
                   <td>{u.id}</td>
                   <td>
-                    {u.username} {isSelf ? "(you)" : ""}
+                    {u.username} {isSelf ? "(you)" : ""}{" "}
+                    {!u.enabled && (
+                      <em style={{ color: "crimson" }}>(disabled)</em>
+                    )}
                   </td>
                   <td>{u.role}</td>
                   <td>
@@ -158,42 +157,50 @@ export default function UsersPage() {
                   </td>
                   <td>{u.created_at}</td>
                   <td>
-                    <button
-                      disabled={busy || isSelf}
-                      onClick={() => void setRole(u.id, nextRole)}
-                      title={isSelf ? "cannot change your own role" : undefined}
-                    >
-                      Make {nextRole}
-                    </button>{" "}
-                    <button disabled={busy} onClick={() => void resetPassword(u.id)}>
-                      Reset password
-                    </button>{" "}
-                    {provisionable(u) && (
-                      <button
-                        disabled={busy}
-                        onClick={() => {
-                          setProvisionFor(u);
-                          setProvisionHost(u.account?.hostId ?? hosts[0]?.id ?? null);
-                        }}
-                      >
-                        {u.account ? "Repair" : "Provision"}
+                    {!u.enabled ? (
+                      <button disabled={busy} onClick={() => void enable(u.id)}>
+                        Enable
                       </button>
-                    )}{" "}
-                    {confirmDelete === u.id ? (
-                      <span>
-                        Sure?{" "}
-                        <button disabled={busy} onClick={() => void remove(u.id)}>
-                          Delete
-                        </button>{" "}
-                        <button onClick={() => setConfirmDelete(null)}>Cancel</button>
-                      </span>
                     ) : (
-                      <button
-                        disabled={busy || isSelf}
-                        onClick={() => setConfirmDelete(u.id)}
-                      >
-                        Delete
-                      </button>
+                      <>
+                        <button
+                          disabled={busy || isSelf}
+                          onClick={() => void setRole(u.id, nextRole)}
+                          title={isSelf ? "cannot change your own role" : undefined}
+                        >
+                          Make {nextRole}
+                        </button>{" "}
+                        <button disabled={busy} onClick={() => void resetPassword(u.id)}>
+                          Reset password
+                        </button>{" "}
+                        {provisionable(u) && (
+                          <button
+                            disabled={busy}
+                            onClick={() => {
+                              setProvisionFor(u);
+                              setProvisionHost(u.account?.hostId ?? hosts[0]?.id ?? null);
+                            }}
+                          >
+                            {u.account ? "Repair" : "Provision"}
+                          </button>
+                        )}{" "}
+                        {confirmDisable === u.id ? (
+                          <span>
+                            Disable? (blocks login, randomizes XMPP pw){" "}
+                            <button disabled={busy} onClick={() => void disable(u.id)}>
+                              Disable
+                            </button>{" "}
+                            <button onClick={() => setConfirmDisable(null)}>Cancel</button>
+                          </span>
+                        ) : (
+                          <button
+                            disabled={busy || isSelf}
+                            onClick={() => setConfirmDisable(u.id)}
+                          >
+                            Disable
+                          </button>
+                        )}
+                      </>
                     )}
                   </td>
                 </tr>
@@ -220,8 +227,6 @@ export default function UsersPage() {
         />
       )}
       {jobOpen && <JobLogModal detail={jobOpen} onClose={() => setJobOpen(null)} />}
-
-      {defaultHostLabel && !hosts.length && null}
     </div>
   );
 
@@ -253,7 +258,9 @@ function PasswordModal({
           ? "User created"
           : reveal.kind === "reset"
             ? "Password reset"
-            : "User provisioned"}{" "}
+            : reveal.kind === "enable"
+              ? "User enabled"
+              : "User provisioned"}{" "}
         — {reveal.user.username}
       </h2>
       <p>

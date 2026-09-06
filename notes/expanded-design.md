@@ -279,9 +279,13 @@ an audit `jobs`/`job_steps` row (status + output log; secrets never logged).
 - Tables: `hosts` (seeded from `server/inventory.ts`, env-overridable), `accounts`
   (user↔host link + status), `jobs` + `job_steps`.
 - Admin routes: `GET /api/hosts` (user-servers first), `POST /api/users` (with `hostId`),
-  `POST /api/users/:id/provision` (re-provision = password rotation, since old plaintext is
-  gone), `POST /api/users/:id/reset-password` (re-hash + Snikket-only sync),
-  `GET /api/jobs/:id` for the audit log.
+  `POST /api/users/:id/disable` and `/enable`, `POST /api/users/:id/provision` (re-provision =
+  password rotation, since old plaintext is gone), `POST /api/users/:id/reset-password`
+  (re-hash + Snikket-only sync), `GET /api/jobs/:id` for the audit log.
+- Users are disabled, never deleted: disabling marks `users.enabled = 0` (blocks app login
+  and kills live sessions) and randomizes the Snikket SCRAM password so the XMPP account is
+  neutralized but kept. Linux accounts have no password to disable. Enabling issues a fresh
+  shared password and re-applies it to Snikket (shown once).
 - Transport (`server/transport/run.ts`) is the app-side twin of the bootstrap `run_remote`:
   `ssh kunguru@<ssh_target> 'sudo -n bash -s'` with the process user's default key.
 - Job queue/SSE is deferred: inline execution sidesteps plaintext persistence; profiles are
