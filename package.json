@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "tsx server/index.ts",
     "build": "vite build",
-    "start": "NODE_ENV=production node server/index.js",
+    "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit",
     "reset-admin-pw": "tsx server/reset-admin-pw.ts"
   },
@@ -23,6 +23,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.3",
+    "tsx": "^4.23.13",
     "vite-express": "^0.22.1",
     "zustand": "^5.0.15"
   },
@@ -33,7 +34,6 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
-    "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
   }

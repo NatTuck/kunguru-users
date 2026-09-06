@@ -1,0 +1,11 @@
+# Node/pnpm toolchain for this project, managed by mise (https://mise.jdx.dev).
+# `node` is resolved from this file on every machine (dev + deployed servers).
+# `pnpm` is intentionally NOT listed here: its mise provider is broken for the
+# standalone asset naming, so like in dev it is installed as a pinned global npm
+# package inside this node. See notes/deploy.md ("Toolchain").
+#
+#   mise install        # installs node@26.1.0
+#   mise exec -- npm i -g pnpm@11.7.0
+
+[tools]
+node = "26.1.0"

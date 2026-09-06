@@ -17,6 +17,7 @@ app.get("/api/ping", (_req, res) => {
 app.use("/api", api);
 
 const PORT = Number(process.env.PORT ?? 3030);
+const HOST = process.env.HOST ?? "127.0.0.1";
 
 const db = getDb();
 
@@ -31,6 +32,7 @@ if (seed.seeded) {
 
 ensureHostSeed(db, hostSeeds());
 
-ViteExpress.listen(app, PORT, () => {
-  console.log(`kunguru-users dev server listening on http://localhost:${PORT}`);
+const server = app.listen(PORT, HOST, () => {
+  ViteExpress.bind(app, server);
+  console.log(`kunguru-users listening on http://${HOST}:${PORT}`);
 });

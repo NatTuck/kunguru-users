@@ -1,0 +1,29 @@
+# systemd USER unit for kunguru-users.
+# Install (as the kunguru user):
+#   install -d ~/.config/systemd/user
+#   cp deploy/kunguru-users.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   loginctl enable-linger kunguru        # start user services at boot
+#   systemctl --user enable --now kunguru-users
+# First-boot admin password: journalctl --user -u kunguru-users
+#
+# The app runs as the user that owns this unit (kunguru). Instance-specific
+# config lives in ~/.config/kunguru-users.env (optional; see
+# deploy/kunguru-users.env.example).
+
+[Unit]
+Description=Kunguru user management app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/apps/kunguru-users
+EnvironmentFile=-%h/.config/kunguru-users.env
+ExecStart=%h/.local/bin/mise exec -- pnpm start
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
