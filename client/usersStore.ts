@@ -1,21 +1,38 @@
 import { create } from "zustand";
 import { ApiError, del, get, patch, post } from "./api";
-import type { PasswordReveal, Role, User } from "./types";
+import type {
+  AdminUser,
+  JobDetail,
+  PasswordReveal,
+  ProvisionInfo,
+  Role,
+} from "./types";
 
 interface UsersState {
-  users: User[];
+  users: AdminUser[];
   loading: boolean;
   listError: string | null;
   busy: boolean;
   actionError: string | null;
   reveal: PasswordReveal | null;
   load: () => Promise<void>;
-  create: (username: string, role: Role) => Promise<void>;
+  create: (username: string, role: Role, hostId: number) => Promise<void>;
   setRole: (id: number, role: Role) => Promise<void>;
   remove: (id: number) => Promise<void>;
   resetPassword: (id: number) => Promise<void>;
+  provision: (id: number, hostId: number) => Promise<void>;
+  job: (id: number) => Promise<JobDetail>;
   clearReveal: () => void;
   clearActionError: () => void;
+}
+
+async function msg(err: unknown, fallback: string): Promise<string> {
+  return err instanceof ApiError ? err.message : fallback;
+}
+
+async function refreshUsers(set: (p: Partial<UsersState>) => void) {
+  const data = await get<{ users: AdminUser[] }>("/api/users").catch(() => null);
+  if (data) set({ users: data.users });
 }
 
 export const useUsersStore = create<UsersState>((set) => ({
@@ -29,34 +46,38 @@ export const useUsersStore = create<UsersState>((set) => ({
   load: async () => {
     set({ loading: true, listError: null });
     try {
-      const data = await get<{ users: User[] }>("/api/users");
+      const data = await get<{ users: AdminUser[] }>("/api/users");
       set({ users: data.users, loading: false });
     } catch (err) {
       set({
         loading: false,
-        listError:
-          err instanceof ApiError ? err.message : "failed to load users",
+        listError: err instanceof ApiError ? err.message : "failed to load users",
       });
     }
   },
 
-  create: async (username, role) => {
+  create: async (username, role, hostId) => {
     set({ busy: true, actionError: null });
     try {
-      const data = await post<{ user: User; password: string }>("/api/users", {
-        username,
-        role,
-      });
-      set((s) => ({
-        users: [...s.users, data.user],
-        reveal: { user: data.user, password: data.password, kind: "create" },
+      const data = await post<{
+        user: AdminUser;
+        password: string;
+        provisioning: ProvisionInfo | null;
+      }>("/api/users", { username, role, hostId });
+      set({
         busy: false,
-      }));
+        reveal: {
+          user: data.user,
+          password: data.password,
+          kind: "create",
+          provisioning: data.provisioning,
+        },
+      });
+      await refreshUsers(set);
     } catch (err) {
       set({
         busy: false,
-        actionError:
-          err instanceof ApiError ? err.message : "failed to create user",
+        actionError: await msg(err, "failed to create user"),
       });
     }
   },
@@ -70,11 +91,7 @@ export const useUsersStore = create<UsersState>((set) => ({
         busy: false,
       }));
     } catch (err) {
-      set({
-        busy: false,
-        actionError:
-          err instanceof ApiError ? err.message : "failed to change role",
-      });
+      set({ busy: false, actionError: await msg(err, "failed to change role") });
     }
   },
 
@@ -87,36 +104,57 @@ export const useUsersStore = create<UsersState>((set) => ({
         busy: false,
       }));
     } catch (err) {
-      set({
-        busy: false,
-        actionError:
-          err instanceof ApiError ? err.message : "failed to delete user",
-      });
+      set({ busy: false, actionError: await msg(err, "failed to delete user") });
     }
   },
 
   resetPassword: async (id) => {
     set({ busy: true, actionError: null });
     try {
-      const data = await post<{ user: User; password: string }>(
-        `/api/users/${id}/reset-password`,
-      );
+      const data = await post<{
+        user: AdminUser;
+        password: string;
+        provisioning: ProvisionInfo | null;
+      }>(`/api/users/${id}/reset-password`);
       set({
+        busy: false,
         reveal: {
           user: data.user,
           password: data.password,
           kind: "reset",
+          provisioning: data.provisioning,
         },
-        busy: false,
       });
+      await refreshUsers(set);
     } catch (err) {
-      set({
-        busy: false,
-        actionError:
-          err instanceof ApiError ? err.message : "failed to reset password",
-      });
+      set({ busy: false, actionError: await msg(err, "failed to reset password") });
     }
   },
+
+  provision: async (id, hostId) => {
+    set({ busy: true, actionError: null });
+    try {
+      const data = await post<{
+        user: AdminUser;
+        password: string;
+        provisioning: ProvisionInfo | null;
+      }>(`/api/users/${id}/provision`, { hostId });
+      set({
+        busy: false,
+        reveal: {
+          user: data.user,
+          password: data.password,
+          kind: "provision",
+          provisioning: data.provisioning,
+        },
+      });
+      await refreshUsers(set);
+    } catch (err) {
+      set({ busy: false, actionError: await msg(err, "failed to provision user") });
+    }
+  },
+
+  job: async (id) => get<JobDetail>(`/api/jobs/${id}`),
 
   clearReveal: () => set({ reveal: null }),
   clearActionError: () => set({ actionError: null }),

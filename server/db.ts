@@ -31,6 +31,51 @@ export interface PublicUser {
   created_at: string;
 }
 
+export type HostRole = "user-server" | "gateway" | "admin";
+
+export interface Host {
+  id: number;
+  name: string;
+  role: HostRole;
+  ssh_target: string;
+  enabled: number;
+}
+
+export type AccountStatus = "pending" | "active" | "failed";
+export type JobStatus = "running" | "succeeded" | "failed";
+
+export interface Account {
+  id: number;
+  user_id: number;
+  host_id: number;
+  status: AccountStatus;
+  last_job_id: number | null;
+}
+
+export interface JobRow {
+  id: number;
+  host_id: number | null;
+  profile: string;
+  created_by: number | null;
+  status: JobStatus;
+  started_at: number;
+  finished_at: number | null;
+}
+
+export interface JobStepRow {
+  id: number;
+  job_id: number;
+  seq: number;
+  script: string;
+  target_host_id: number | null;
+  target_ssh: string;
+  status: JobStatus;
+  exit_code: number | null;
+  output_log: string;
+  started_at: number;
+  finished_at: number | null;
+}
+
 export const SCHEMA = `
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,6 +90,49 @@ export const SCHEMA = `
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS hosts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL CHECK (role IN ('user-server', 'gateway', 'admin')),
+    ssh_target TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id INTEGER REFERENCES hosts(id),
+    profile TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'succeeded', 'failed')),
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS job_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    script TEXT NOT NULL,
+    target_host_id INTEGER REFERENCES hosts(id),
+    target_ssh TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'succeeded', 'failed')),
+    exit_code INTEGER,
+    output_log TEXT NOT NULL DEFAULT '',
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    host_id INTEGER NOT NULL REFERENCES hosts(id),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'failed')),
+    last_job_id INTEGER REFERENCES jobs(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, host_id)
   );
 `;
 
@@ -132,6 +220,53 @@ export function listUsers(db: Database.Database): PublicUser[] {
       "SELECT id, username, role, created_at FROM users ORDER BY id ASC",
     )
     .all() as PublicUser[];
+}
+
+export interface AdminUserRow extends PublicUser {
+  account: {
+    hostId: number;
+    hostName: string;
+    hostRole: HostRole;
+    status: AccountStatus;
+  } | null;
+}
+
+export interface AccountJoinRow extends PublicUser {
+  host_id: number | null;
+  host_name: string | null;
+  host_role: HostRole | null;
+  account_status: AccountStatus | null;
+}
+
+export function listUsersWithAccounts(db: Database.Database): AccountJoinRow[] {
+  return db
+    .prepare(
+      `SELECT u.id, u.username, u.role, u.created_at,
+              a.host_id, h.name AS host_name, h.role AS host_role, a.status AS account_status
+       FROM users u
+       LEFT JOIN accounts a ON a.user_id = u.id
+       LEFT JOIN hosts h ON h.id = a.host_id
+       ORDER BY u.id ASC`,
+    )
+    .all() as AccountJoinRow[];
+}
+
+export function toAdminRows(rows: AccountJoinRow[]): AdminUserRow[] {
+  return rows.map((r) => ({
+    id: r.id,
+    username: r.username,
+    role: r.role,
+    created_at: r.created_at,
+    account:
+      r.host_id != null
+        ? {
+            hostId: r.host_id,
+            hostName: r.host_name as string,
+            hostRole: r.host_role as HostRole,
+            status: r.account_status as AccountStatus,
+          }
+        : null,
+  }));
 }
 
 export function countAdmins(db: Database.Database): number {
@@ -263,4 +398,228 @@ export async function ensureAdminSeed(db: Database.Database): Promise<SeedResult
   const password = generatePassword();
   await setAdminPassword(db, password);
   return { seeded: true, password };
+}
+
+// --- Hosts ---
+
+const HOST_ROLE_ORDER = "CASE role WHEN 'user-server' THEN 0 WHEN 'gateway' THEN 1 ELSE 2 END";
+
+export interface HostSeed {
+  name: string;
+  role: HostRole;
+  ssh_target: string;
+}
+
+export function ensureHostSeed(
+  db: Database.Database,
+  seed: HostSeed[],
+): void {
+  const stmt = db.prepare(
+    "INSERT INTO hosts (name, role, ssh_target) VALUES (@name, @role, @ssh_target) ON CONFLICT(name) DO NOTHING",
+  );
+  for (const h of seed) stmt.run(h);
+}
+
+export function listHosts(db: Database.Database, includeDisabled = false): Host[] {
+  return db
+    .prepare(
+      `SELECT * FROM hosts ${includeDisabled ? "" : "WHERE enabled = 1"}
+       ORDER BY ${HOST_ROLE_ORDER}, name ASC`,
+    )
+    .all() as Host[];
+}
+
+export function getHostById(db: Database.Database, id: number): Host | undefined {
+  return db.prepare("SELECT * FROM hosts WHERE id = ?").get(id) as Host | undefined;
+}
+
+export function getHostByName(db: Database.Database, name: string): Host | undefined {
+  return db.prepare("SELECT * FROM hosts WHERE name = ?").get(name) as Host | undefined;
+}
+
+// --- Accounts (login user <-> provisioned host account) ---
+
+export function createAccount(
+  db: Database.Database,
+  userId: number,
+  hostId: number,
+): Account {
+  const info = db
+    .prepare("INSERT INTO accounts (user_id, host_id) VALUES (?, ?)")
+    .run(userId, hostId);
+  return {
+    id: Number(info.lastInsertRowid),
+    user_id: userId,
+    host_id: hostId,
+    status: "pending",
+    last_job_id: null,
+  };
+}
+
+export function setAccountStatus(
+  db: Database.Database,
+  accountId: number,
+  status: AccountStatus,
+  lastJobId?: number | null,
+): void {
+  db.prepare("UPDATE accounts SET status = ?, last_job_id = ? WHERE id = ?").run(
+    status,
+    lastJobId ?? null,
+    accountId,
+  );
+}
+
+export function getAccountByUserHost(
+  db: Database.Database,
+  userId: number,
+  hostId: number,
+): Account | undefined {
+  return db
+    .prepare("SELECT * FROM accounts WHERE user_id = ? AND host_id = ?")
+    .get(userId, hostId) as Account | undefined;
+}
+
+export function getAccountForUser(
+  db: Database.Database,
+  userId: number,
+): (Account & { host: Host }) | undefined {
+  const row = db
+    .prepare(
+      `SELECT a.*, h.id AS h_id, h.name AS h_name, h.role AS h_role,
+              h.ssh_target AS h_ssh_target, h.enabled AS h_enabled
+       FROM accounts a JOIN hosts h ON h.id = a.host_id
+       WHERE a.user_id = ? ORDER BY a.id ASC LIMIT 1`,
+    )
+    .get(userId) as
+    | (Account & {
+        h_id: number;
+        h_name: string;
+        h_role: HostRole;
+        h_ssh_target: string;
+        h_enabled: number;
+      })
+    | undefined;
+  if (!row) return undefined;
+  const { h_id, h_name, h_role, h_ssh_target, h_enabled, ...account } = row;
+  return {
+    ...account,
+    host: {
+      id: h_id,
+      name: h_name,
+      role: h_role,
+      ssh_target: h_ssh_target,
+      enabled: h_enabled,
+    },
+  };
+}
+
+// --- Jobs / steps (audit trail for provisioning runs) ---
+
+export function createJob(
+  db: Database.Database,
+  opts: {
+    hostId: number | null;
+    profile: string;
+    createdBy: number | null;
+  },
+): JobRow {
+  const info = db
+    .prepare(
+      "INSERT INTO jobs (host_id, profile, created_by, started_at) VALUES (?, ?, ?, ?)",
+    )
+    .run(opts.hostId, opts.profile, opts.createdBy, Date.now());
+  return {
+    id: Number(info.lastInsertRowid),
+    host_id: opts.hostId,
+    profile: opts.profile,
+    created_by: opts.createdBy,
+    status: "running",
+    started_at: Date.now(),
+    finished_at: null,
+  };
+}
+
+export function finishJob(
+  db: Database.Database,
+  id: number,
+  status: JobStatus,
+): void {
+  db.prepare("UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?").run(
+    status,
+    Date.now(),
+    id,
+  );
+}
+
+export function createJobStep(
+  db: Database.Database,
+  opts: {
+    jobId: number;
+    seq: number;
+    script: string;
+    targetHostId: number | null;
+    targetSsh: string;
+  },
+): JobStepRow {
+  const info = db
+    .prepare(
+      `INSERT INTO job_steps (job_id, seq, script, target_host_id, target_ssh, started_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(opts.jobId, opts.seq, opts.script, opts.targetHostId, opts.targetSsh, Date.now());
+  return {
+    id: Number(info.lastInsertRowid),
+    job_id: opts.jobId,
+    seq: opts.seq,
+    script: opts.script,
+    target_host_id: opts.targetHostId,
+    target_ssh: opts.targetSsh,
+    status: "running",
+    exit_code: null,
+    output_log: "",
+    started_at: Date.now(),
+    finished_at: null,
+  };
+}
+
+export function finishJobStep(
+  db: Database.Database,
+  id: number,
+  status: JobStatus,
+  exitCode: number,
+  outputLog: string,
+): void {
+  db.prepare(
+    "UPDATE job_steps SET status = ?, exit_code = ?, output_log = ?, finished_at = ? WHERE id = ?",
+  ).run(status, exitCode, outputLog, Date.now(), id);
+}
+
+export function getJob(db: Database.Database, id: number): JobRow | undefined {
+  return db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as JobRow | undefined;
+}
+
+export function getJobSteps(
+  db: Database.Database,
+  jobId: number,
+): JobStepRow[] {
+  return db
+    .prepare("SELECT * FROM job_steps WHERE job_id = ? ORDER BY seq ASC")
+    .all(jobId) as JobStepRow[];
+}
+
+export function listJobsForUser(
+  db: Database.Database,
+  userId: number,
+  limit = 20,
+): (JobRow & { host_name: string | null })[] {
+  return db
+    .prepare(
+      `SELECT j.*, h.name AS host_name
+       FROM jobs j LEFT JOIN hosts h ON h.id = j.host_id
+       WHERE j.created_by = ? OR EXISTS (
+         SELECT 1 FROM accounts a WHERE a.user_id = ? AND a.last_job_id = j.id
+       )
+       ORDER BY j.id DESC LIMIT ?`,
+    )
+    .all(userId, userId, limit) as (JobRow & { host_name: string | null })[];
 }

@@ -1,7 +1,8 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import ViteExpress from "vite-express";
-import { ensureAdminSeed, getDb, ADMIN_USERNAME } from "./db";
+import { ensureAdminSeed, ensureHostSeed, getDb, ADMIN_USERNAME } from "./db";
+import { hostSeeds } from "./inventory";
 import { api } from "./routes";
 
 const app = express();
@@ -27,6 +28,8 @@ if (seed.seeded) {
   console.log("  Store it somewhere safe now. It will not be shown again.");
   console.log("==================================================");
 }
+
+ensureHostSeed(db, hostSeeds());
 
 ViteExpress.listen(app, PORT, () => {
   console.log(`kunguru-users dev server listening on http://localhost:${PORT}`);

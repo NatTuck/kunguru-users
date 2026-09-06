@@ -268,6 +268,25 @@ the later WebUI milestone). Manual precondition: any other service bound to host
 (e.g. a dockerized mail stack on the hub) must be stopped/disarmed by the operator first —
 the scripts never manage other services' containers.
 
+## Provisioning tenant accounts (implemented)
+
+Users are created in the app with a target machine; creating one runs the `standard-account`
+profile **inline** (Linux account on the chosen host via `scripts/account/ensure.sh`, then a
+Snikket account via `scripts/snikket/ensure-account.sh`) so the shared web/XMPP plaintext
+never rests anywhere — it travels only in-memory to the remote step. The run is recorded as
+an audit `jobs`/`job_steps` row (status + output log; secrets never logged).
+
+- Tables: `hosts` (seeded from `server/inventory.ts`, env-overridable), `accounts`
+  (user↔host link + status), `jobs` + `job_steps`.
+- Admin routes: `GET /api/hosts` (user-servers first), `POST /api/users` (with `hostId`),
+  `POST /api/users/:id/provision` (re-provision = password rotation, since old plaintext is
+  gone), `POST /api/users/:id/reset-password` (re-hash + Snikket-only sync),
+  `GET /api/jobs/:id` for the audit log.
+- Transport (`server/transport/run.ts`) is the app-side twin of the bootstrap `run_remote`:
+  `ssh kunguru@<ssh_target> 'sudo -n bash -s'` with the process user's default key.
+- Job queue/SSE is deferred: inline execution sidesteps plaintext persistence; profiles are
+  code in `server/provision.ts` (extend for hermes/webui/xmpp steps later).
+
 ## Idempotent converge guarantee
 
 Every step script is `*-ensure`: safe on a clean host, safe on a partially-configured
