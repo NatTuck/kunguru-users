@@ -137,9 +137,16 @@ and let it keep mutating the host.
 
 ## Data model (sqlite, better-sqlite3)
 
-- `app_users` — `id, email/username, password_hash, role ∈ {admin, user}`. Roles now so
-  tenant self-service is a later feature, not a schema change. Seed one admin on first
-  boot.
+- `users` — `id, username, password_hash, role ∈ {admin, user}`, with `created_at`. Roles now so
+  tenant self-service is a later feature, not a schema change. The `kunguru` admin is seeded
+  on first boot with a random 16-char password (argon2-hashed; plaintext logged to the console
+  once). A `pnpm reset-admin-pw` script regenerates that admin password. The DB file lives at
+  `data/kunguru.db` with owner-only perms (`0700` dir / `0600` db + WAL sidecars) fixed on startup.
+- `sessions` — `token_hash, user_id → users(id) ON DELETE CASCADE, created_at, expires_at`. Web
+  logins issue an httpOnly session cookie; the DB stores only the SHA-256 hash of the bearer
+  token (nothing reversible at rest), with a 7-day sliding expiry. `/api/auth/*` handles
+  login/logout and `/api/auth/me` restores a session. In-app login is the current web-auth
+  lane (the nginx `auth_request` boundary from §Authentication remains a later integration).
 - `hosts` — `name, role, ssh_target` (otter → `localhost`; goose → over VPN). Pre-seeded
   for the test pair. Keeps "where the app runs" distinct from "hosts you provision onto."
 - `accounts` — managed tenant accounts: `id, host, username, status ∈ {active,inactive}`,
@@ -182,13 +189,13 @@ The web auth password and the XMPP password are the **same**. Rule: **when the w
 password is set, the XMPP password is set to match.** Treat web-auth + XMPP as a single
 logical credential set.
 
-- **Set together:** one generated plaintext → (1) hashed into `app_users` (verifies the
+- **Set together:** one generated plaintext → (1) hashed into `users` (verifies the
   app/web login) and (2) pushed to Snikket's SCRAM store, in the same provisioning run.
 - **Reset / resync together:** generate a fresh value, push to Snikket first, then update
   the app hash (ordering minimizes the failure window); retry the XMPP leg on failure.
   A later "resync password" self-service op is "rotate both," which doubles as the
   drift-repair path.
-- **Nothing plaintext is retained at rest.** `app_users` hash is verification-only;
+- **Nothing plaintext is retained at rest.** `users` hash is verification-only;
   Snikket's SCRAM is its own store; neither is reversible to the live value. The
   "xmpp matches web-auth" invariant is guaranteed by never setting one without the
   other — not by storing the shared value.
@@ -227,6 +234,39 @@ Fresh private server must dial the gateway and bring the VPN up *before* the adm
 provision it → "add a server to the fleet" is its own two-phase provisioning step
 (`server/bootstrap.sh`: private dials out → admin confirms → admin pushes config),
 represented as explicit state, not emergent.
+
+## Initial-install bootstrap (implemented, `scripts/bootstrap/`)
+
+Pure-bash, idempotent (`*-ensure`) scripts run manually from any controller that can ssh
+to the group (not necessarily the webapp host); the web app can wrap the same scripts
+behind the transport seam later. Reads a gitignored `group.conf` inventory (template in
+`group.conf.example`). Dev topology: hub **otter** (`otter.ferrus.net`), lanpeer **goose**
+(`10.0.1.2` behind the existing WG peer LAN); Snikket primary **chat.ironbeard.com**.
+
+- `bootstrap.sh [--check|--apply] [--only step]` — orchestrator; `--check` is a
+  non-destructive status read, `--apply` converges the steps in order.
+- `ensure-ssh-access.sh` — one-time (as the init sudo user): authorizes the controller key
+  on `kunguru@` per host + passwordless sudo; all later steps run as `kunguru@`.
+- `ensure-wireguard.sh` — ADOPTS/VERIFIES the existing hub (`wg0 10.0.0.1/24`), never
+  regenerates keys or rewrites addresses; checks ip_forward + hub→peer/LAN reachability.
+  (A clean-host hub would be created from inventory facts; direct `peer` spokes are the
+  future "add a server to the fleet" path.)
+- `ensure-nginx.sh` — makes nginx own 80/443 on the public gateway: deletes the legacy
+  wg `DNAT` of :80/:443 → `10.0.1.2` (live iptables **and** stripped from `wg0.conf`
+  PostUp/PostDown so it cannot return), installs nginx/certbot, writes the Snikket vhost
+  (+ an `ssl_reject_handshake` default so unknown HTTPS SNI is not served).
+- `ensure-snikket.sh` — Docker Snikket on host networking behind nginx, `SNIKKET_TWEAK_*`
+  alt ports (5080/5443), converging `/etc/snikket/snikket.conf`.
+
+**Snikket TLS model (single ACME owner):** Snikket's cert-manager obtains/owns the
+certificates for `chat./groups.chat./share.chat.<base>` (its HTTP-01 is proxied through
+nginx :80); nginx terminates TLS using those same cert files from the Snikket data volume.
+certbot is installed for future vhosts but is NOT run against Snikket hostnames, so two
+ACME clients can never fight over HTTP-01. Note: taking over 80/443 removes the legacy
+DNAT, which drops the pre-existing public `hermes-nat.goose.ferrus.net` entry (re-wired in
+the later WebUI milestone). Manual precondition: any other service bound to host :80/:443
+(e.g. a dockerized mail stack on the hub) must be stopped/disarmed by the operator first —
+the scripts never manage other services' containers.
 
 ## Idempotent converge guarantee
 

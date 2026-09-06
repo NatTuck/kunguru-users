@@ -11,16 +11,23 @@
     "dev": "tsx server/index.ts",
     "build": "vite build",
     "start": "NODE_ENV=production node server/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "reset-admin-pw": "tsx server/reset-admin-pw.ts"
   },
   "dependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "argon2": "^0.45.1",
+    "better-sqlite3": "^13.0.3",
+    "cookie-parser": "^1.4.7",
     "express": "^5.2.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.3",
     "vite-express": "^0.22.1",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/express": "^5.0.6",
     "@types/node": "^26.4.1",
     "@types/react": "^19.2.18",

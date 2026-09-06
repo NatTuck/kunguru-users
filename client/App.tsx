@@ -1,24 +1,47 @@
 import { useEffect } from "react";
-import { usePingStore } from "./store";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { useAuthStore } from "./authStore";
+import { GuestOnly, RequireAdmin, RequireAuth } from "./guards";
+import Login from "./Login";
+import Layout from "./Layout";
+import Account from "./Account";
+import UsersPage from "./UsersPage";
 
 export default function App() {
-  const { ping, error, loading, loadPing } = usePingStore();
+  const initialize = useAuthStore((s) => s.initialize);
 
   useEffect(() => {
-    void loadPing();
-  }, [loadPing]);
+    void initialize();
+  }, [initialize]);
 
   return (
-    <main style={{ fontFamily: "sans-serif", padding: "2rem" }}>
-      <h1>Kunguru Users</h1>
-      {loading && <p>pinging…</p>}
-      {error && <p style={{ color: "crimson" }}>error: {error}</p>}
-      {ping && (
-        <p>
-          api ok: <code>{String(ping.ok)}</code> · ts:{" "}
-          <code>{new Date(ping.ts).toISOString()}</code>
-        </p>
-      )}
-    </main>
+    <Routes>
+      <Route
+        path="/login"
+        element={
+          <GuestOnly>
+            <Login />
+          </GuestOnly>
+        }
+      />
+      <Route
+        element={
+          <RequireAuth>
+            <Layout />
+          </RequireAuth>
+        }
+      >
+        <Route path="/" element={<Account />} />
+        <Route
+          path="/admin/users"
+          element={
+            <RequireAdmin>
+              <UsersPage />
+            </RequireAdmin>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
+    </Routes>
   );
 }

@@ -4,3 +4,4 @@ dist/
 .env
 .env.*
 data/
+scripts/bootstrap/group.conf

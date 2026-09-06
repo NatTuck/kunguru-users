@@ -1,0 +1,61 @@
+# kunguru bootstrap group inventory.
+#
+# Copy this file to `group.conf` (gitignored) and edit to match your group.
+# It is sourced by bootstrap.sh; keep it valid bash. No secrets live here
+# (public endpoints / VPN IPs / domain names only).
+#
+# Premise (see notes/DESIGN.md): every host has a `kunguru` account with
+# passwordless sudo and passwordless ssh access to the other hosts in the group.
+# bootstrap.sh uses INIT_SSH_USER once to grant ssh access from this controller,
+# then performs all work as BOOTSTRAP_SSH_USER.
+
+# Account on each server with passwordless sudo (target identity for all steps).
+BOOTSTRAP_SSH_USER="kunguru"
+# Sudo-capable account this controller can already reach on every host; used only
+# by the `ssh-access` step to authorize BOOTSTRAP_SSH_USER. Leave empty to disable.
+INIT_SSH_USER="nat"
+# Public key to authorize for BOOTSTRAP_SSH_USER (this controller's key).
+CONTROLLER_SSH_KEY="${HOME}/.ssh/id_ed25519.pub"
+
+# Public gateway facts (the hub; nginx + snikket run here).
+PUBLIC_IP="167.114.113.100"
+PUBLIC_FQDN="otter.ferrus.net"
+
+# --- WireGuard hub (adopted + verified, never rebuilt) ---
+WG_IFACE="wg0"
+WG_HUB_IP="10.0.0.1"
+WG_SUBNET="10.0.0.0/24"
+WG_PORT="51820"
+
+# --- Snikket ---
+SNIKKET_HOST="otter.ferrus.net"
+# Primary Snikket domain. DNS must resolve this plus groups.<dom> and
+# share.<dom> to the public gateway (here: chat.ironbeard.com,
+# groups.chat.ironbeard.com, share.chat.ironbeard.com -> $PUBLIC_IP).
+SNIKKET_DOMAIN="chat.ironbeard.com"
+# REQUIRED for the snikket step; e.g. you@ironbeard.com
+SNIKKET_ADMIN_EMAIL=""
+# nginx on $PUBLIC_FQDN owns 80/443, so Snikket uses alternate web ports.
+SNIKKET_TWEAK_HTTP_PORT="5080"
+SNIKKET_TWEAK_HTTPS_PORT="5443"
+
+# --- Host roles ---
+# role `hub`     : WireGuard hub + (for now) nginx + Snikket public machine.
+# role `lanpeer` : reachable from the hub over the existing peer LAN; no local wg.
+# role `peer`    : (future) host with its own wg interface dialing the hub.
+declare -A HOST_ROLES=(
+  ["otter.ferrus.net"]="hub"
+  ["goose.ferrus.net"]="lanpeer"
+)
+
+# ssh address per host: use whatever works from the controller's ~/.ssh/config
+# (aliases, ProxyJump, etc.). Defaults to the host key name.
+declare -A HOST_SSH=(
+  ["otter.ferrus.net"]="otter.ferrus.net"
+  ["goose.ferrus.net"]="goose"
+)
+
+# Hub-facing IP for lanpeer/peer hosts (reachability checks run from the hub).
+declare -A HOST_PEER_IP=(
+  ["goose.ferrus.net"]="10.0.1.2"
+)
