@@ -137,7 +137,7 @@ PY"
     chown "${USERNAME}" "${home}/.hermes/plugins"
     run_as_user "git clone --depth 1 https://github.com/fastfinge/hermes-xmpp-plugin.git '${plugin_dir}'"
   fi
-  run_as_user "'${venv_py}' -m pip install --quiet -r '${plugin_dir}/requirements.txt'"
+  run_as_user "'${home}/.hermes/bin/uv' pip install --quiet --python '${venv_py}' -r '${plugin_dir}/requirements.txt'"
   run_as_user 'hermes config set plugins.enabled '"'"'["hermes-xmpp-plugin"]'"'"' >/dev/null'
 fi
 
