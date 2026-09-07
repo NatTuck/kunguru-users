@@ -18,12 +18,19 @@
 # Env: BIFROST_PORT (default 8181)  BIFROST_IMAGE (default maximhq/bifrost:v2.0.0)
 #      BIFROST_BIND (default 127.0.0.1)  BIFROST_DOMAIN (informational, for the
 #      one-time credential banner)  BIFROST_ADMIN_USERNAME (default admin)
+#      BIFROST_CORS_ORIGINS (whitespace-separated origins, default "*")
+#
+# The `client` config section (CORS origins, enforce_auth_on_inference, ...) is
+# owned by this config.json: Bifrost re-applies it on startup, so UI edits to
+# fields in that section do NOT survive a restart. Change them here (group.conf
+# -> BIFROST_CORS_ORIGINS) and re-run this step, which restarts the container.
 
 port="${BIFROST_PORT:-8181}"
 bind="${BIFROST_BIND:-127.0.0.1}"
 image="${BIFROST_IMAGE:-maximhq/bifrost:v2.0.0}"
 domain="${BIFROST_DOMAIN:-}"
 admin_user="${BIFROST_ADMIN_USERNAME:-admin}"
+cors_origins="${BIFROST_CORS_ORIGINS:-*}"
 dir="/etc/bifrost"
 env_file="${dir}/env"
 conf="${dir}/config.json"
@@ -69,22 +76,37 @@ else
 fi
 
 # --- config.json (seeds admin auth + inference key enforcement; no secrets) ---
-write_file "${conf}" <<'EOF'
-{
-  "$schema": "https://www.getbifrost.ai/schema",
-  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
-  "client": {
-    "enforce_auth_on_inference": true
-  },
-  "governance": {
-    "auth_config": {
-      "is_enabled": true,
-      "admin_username": "env.BIFROST_ADMIN_USERNAME",
-      "admin_password": "env.BIFROST_ADMIN_PASSWORD"
-    }
-  }
+# Client-section fields (CORS origins, enforce_auth_on_inference) are owned by
+# this file -- Bifrost re-applies them on startup, so do not set them in the UI.
+apt_ensure python3
+old_hash=""
+[[ -f "${conf}" ]] && old_hash="$(sha256sum "${conf}" | cut -d' ' -f1)"
+BIFROST_CORS_ORIGINS="${cors_origins}" python3 - <<'PY' | write_file "${conf}"
+import json, os
+origins = [o.strip() for o in os.environ["BIFROST_CORS_ORIGINS"].split() if o.strip()]
+conf = {
+    "$schema": "https://www.getbifrost.ai/schema",
+    "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+    "client": {
+        "enforce_auth_on_inference": True,
+        "allowed_origins": origins or ["*"],
+    },
+    "governance": {
+        "auth_config": {
+            "is_enabled": True,
+            "admin_username": "env.BIFROST_ADMIN_USERNAME",
+            "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+        }
+    },
 }
-EOF
+print(json.dumps(conf, indent=2))
+PY
+new_hash="$(sha256sum "${conf}" | cut -d' ' -f1)"
+if [[ "${old_hash}" != "${new_hash}" ]] && \
+   docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null | grep -q true; then
+  docker restart "${container}" >/dev/null
+  log "restarted ${container} to apply config.json"
+fi
 
 # --- Container converge (recreate only when image/port drifted) ---
 if docker inspect "${container}" >/dev/null 2>&1; then

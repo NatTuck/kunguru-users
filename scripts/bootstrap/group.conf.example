@@ -47,6 +47,10 @@ SNIKKET_TWEAK_HTTPS_PORT="5443"
 BIFROST_HOST="otter.ferrus.net"
 BIFROST_DOMAIN="llm.ironbeard.com"
 BIFROST_PORT="8181"
+# CORS origins allowed by the gateway (whitespace-separated). This is file-owned
+# (client section): changing it here + re-running the bifrost step is the ONLY
+# durable way to set it -- UI edits to client-section fields are lost on restart.
+BIFROST_CORS_ORIGINS="https://*.ironbeard.com"
 # BIFROST_IMAGE="maximhq/bifrost:v2.0.0"
 
 # --- Host roles ---

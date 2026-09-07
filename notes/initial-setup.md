@@ -48,6 +48,7 @@ Fill at minimum:
 | `SNIKKET_HOST/DOMAIN/ADMIN_EMAIL` | Snikket host, primary domain, admin email (**email required**) |
 | `SNIKKET_TWEAK_*_PORT` | Snikket web ports behind nginx (5080/5443) |
 | `BIFROST_HOST/DOMAIN/PORT` | Bifrost gateway host, public HTTPS name (e.g. `llm.ironbeard.com`), local port behind nginx |
+| `BIFROST_CORS_ORIGINS` | whitespace-separated CORS origins allowed by the gateway (file-owned; see §4) |
 | `HOST_ROLES`, `HOST_SSH`, `HOST_PEER_IP` | per-host role (`hub`/`lanpeer`/`peer`), ssh address, hub-facing IP |
 
 ## 2. Inspect before touching
@@ -102,6 +103,16 @@ host at `/etc/bifrost/env` (0600). Dashboard/admin-API auth is on from first
 boot and keyless `/v1/*` inference is rejected (`enforce_auth_on_inference`).
 Providers and virtual keys are **not** seeded by scripts (upstream API keys are
 secrets); the operator adds them in the dashboard.
+
+> **The `client` config section is file-owned.** `config.json` (written by the
+> bifrost step from `group.conf`) declares `enforce_auth_on_inference` and
+> `allowed_origins` (`BIFROST_CORS_ORIGINS`). Bifrost re-applies that section on
+> every startup, so **UI edits to client-section fields (CORS origins, allowed
+> headers, body size, ...) silently revert on restart.** Providers, virtual keys,
+> budgets, and routing are separate DB sections and survive restarts fine. To
+> change a client-section field durably: edit `BIFROST_CORS_ORIGINS` in
+> `group.conf` (or `/etc/bifrost/config.json` directly) and re-run the bifrost
+> step, which restarts the container when the file changes.
 
 1. Point DNS: add `BIFROST_DOMAIN` -> `$PUBLIC_IP`.
 2. Run the step (idempotent, safe to re-run):
