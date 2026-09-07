@@ -134,6 +134,7 @@ PY"
   if [[ ! -d "${plugin_dir}" ]]; then
     echo "[changed] installing hermes-xmpp-plugin for ${USERNAME}"
     mkdir -p "${home}/.hermes/plugins"
+    chown "${USERNAME}" "${home}/.hermes/plugins"
     run_as_user "git clone --depth 1 https://github.com/fastfinge/hermes-xmpp-plugin.git '${plugin_dir}'"
   fi
   run_as_user "'${venv_py}' -m pip install --quiet -r '${plugin_dir}/requirements.txt'"
