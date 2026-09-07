@@ -29,7 +29,6 @@ import {
 import {
   deactivateUserAccess,
   provisionStandardAccount,
-  syncSharedPassword,
   syncSnikketPassword,
   type ProvisionResult,
 } from "./provision";
@@ -375,10 +374,9 @@ api.post("/users/:id/provision", requireAuth, requireAdmin, async (req, res) => 
   }
 });
 
-// Reset password: rotates the shared password and re-syncs Snikket + the
-// Hermes XMPP credential so the web and XMPP passwords stay identical. The
-// Hermes LLM key is preserved (reset-password is a credential reset, not a
-// re-provision).
+// Reset password: rotates the shared web/XMPP password and re-syncs Snikket
+// (the tenant's chat identity). The Hermes agent has its own Snikket account
+// and Bifrost key, so it is untouched by a password reset.
 api.post("/users/:id/reset-password", requireAuth, requireAdmin, async (req, res) => {
   const id = parseId(req.params.id);
   if (id == null) {
@@ -403,7 +401,7 @@ api.post("/users/:id/reset-password", requireAuth, requireAdmin, async (req, res
   const account = getAccountForUser(db, id);
   if (account) {
     try {
-      const result = await syncSharedPassword({
+      const result = await syncSnikketPassword({
         user: { id: target.id, username: target.username },
         password,
         createdBy: currentUserId(res) ?? null,
@@ -412,7 +410,7 @@ api.post("/users/:id/reset-password", requireAuth, requireAdmin, async (req, res
     } catch (err) {
       provisioning = {
         ok: false,
-        message: err instanceof Error ? err.message : "shared password sync failed",
+        message: err instanceof Error ? err.message : "snikket password sync failed",
       };
     }
   }

@@ -6,6 +6,7 @@ import {
   createJobStep,
   finishJob,
   finishJobStep,
+  generatePassword,
   getAccountByUserHost,
   getAccountForUser,
   getDb,
@@ -28,11 +29,9 @@ import {
 import { runRemote } from "./transport/run";
 
 export const STANDARD_ACCOUNT_PROFILE = "standard-account";
-// Snikket-only password push (used when disabling, to neutralize XMPP).
+// Snikket-only password push (disable neutralizes XMPP; reset rotates the
+// tenant web/XMPP password -- the Hermes agent has its own account).
 export const PASSWORD_SYNC_PROFILE = "password-sync";
-// Snikket + Hermes XMPP credential push (used on password reset; Hermes LLM key
-// is left untouched so the existing gateway key keeps working).
-export const SHARED_CREDENTIALS_PROFILE = "shared-credentials";
 
 type StepTarget = "user-host" | "snikket-host";
 
@@ -47,22 +46,27 @@ interface StepRuntime {
   host: Host;
 }
 
-// Ordered steps. Hermes runs on the account's user-host; its LLM key + XMPP
-// credentials are injected as step env (never persisted by the app).
+// Ordered steps. The tenant gets a Linux account + Snikket account (their chat
+// identity). A separate Snikket account ("<user>-agent") is the Hermes agent's
+// XMPP identity -- tenants message it from their own account. Hermes runs on
+// the account's user-host; its LLM key + agent XMPP creds are injected as step
+// env (never persisted by the app).
 export const PROFILES: Record<string, ProfileStepDef[]> = {
   [STANDARD_ACCOUNT_PROFILE]: [
     { name: "linux-account", scriptRel: "account/ensure.sh", target: "user-host" },
     { name: "snikket-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
+    { name: "snikket-agent-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
   ],
   [PASSWORD_SYNC_PROFILE]: [
     { name: "snikket-password", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
   ],
-  [SHARED_CREDENTIALS_PROFILE]: [
-    { name: "snikket-password", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
-    { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
-  ],
 };
+
+/** XMPP identity for the tenant's Hermes agent (separate from the tenant). */
+export function agentUsername(username: string): string {
+  return `${username}-agent`;
+}
 
 export interface ProvisionResult {
   jobId: number;
@@ -83,10 +87,11 @@ interface RunJobOpts {
   profile: string;
   jobHostId: number;
   steps: StepRuntime[];
-  // Hermes step configuration. apiKey omitted/empty => leave the existing key
-  // in the agent's config alone (used by password reset).
-  llm?: { baseUrl: string; model: string; apiKey?: string };
-  xmppEnabled?: boolean;
+  // Hermes agent configuration (user-host step). LLM apiKey is the freshly
+  // issued per-user Bifrost key; agent = the agent's own XMPP account, which
+  // the tenant (allowed user) messages.
+  llm?: { apiKey: string };
+  agent?: { username: string; password: string };
   // Optional extra env exported to every step (e.g. HERMES_ACTION=stop).
   action?: string;
 }
@@ -120,20 +125,23 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
       const script = await readFile(join(SCRIPTS_DIR, s.def.scriptRel), "utf8");
       const env: Record<string, string> = { USERNAME: user.username };
       if (opts.action) env.HERMES_ACTION = opts.action;
-      if (s.def.target === "snikket-host") {
+      if (s.def.name === "snikket-account" || s.def.name === "snikket-password") {
         env.SNIKKET_ACCOUNT_USERNAME = user.username;
         env.SNIKKET_ACCOUNT_PASSWORD = password;
       }
+      if (s.def.name === "snikket-agent-account") {
+        env.SNIKKET_ACCOUNT_USERNAME = opts.agent?.username ?? agentUsername(user.username);
+        env.SNIKKET_ACCOUNT_PASSWORD = opts.agent?.password ?? password;
+      }
       if (s.def.name === "hermes") {
-        const jid = `${user.username}@${XMPP_DOMAIN}`;
-        env.HERMES_LLM_BASE_URL = opts.llm?.baseUrl ?? HERMES_LLM_BASE_URL;
-        env.HERMES_MODEL = opts.llm?.model ?? HERMES_MODEL;
+        env.HERMES_LLM_BASE_URL = HERMES_LLM_BASE_URL;
+        env.HERMES_MODEL = HERMES_MODEL;
         if (opts.llm?.apiKey) env.HERMES_LLM_API_KEY = opts.llm.apiKey;
-        if (opts.xmppEnabled) {
-          env.XMPP_JID = jid;
-          env.XMPP_PASSWORD = password;
-          env.XMPP_ALLOWED_USERS = jid;
-          env.XMPP_HOME_CHANNEL = jid;
+        if (opts.agent) {
+          env.XMPP_JID = `${opts.agent.username}@${XMPP_DOMAIN}`;
+          env.XMPP_PASSWORD = opts.agent.password;
+          env.XMPP_ALLOWED_USERS = `${user.username}@${XMPP_DOMAIN}`;
+          env.XMPP_HOME_CHANNEL = `${user.username}@${XMPP_DOMAIN}`;
           env.XMPP_HOST = XMPP_DOMAIN;
         }
       }
@@ -200,18 +208,16 @@ export async function provisionStandardAccount(opts: {
   const previousVkId = account.bifrost_vk_id;
 
   const vk = await issueVirtualKey(opts.user.username);
+  const agentName = agentUsername(opts.user.username);
+  const agentPassword = generatePassword();
 
   const result = await runJob({
     ...opts,
     profile: STANDARD_ACCOUNT_PROFILE,
     jobHostId: target.id,
     steps: stepsFor(db, STANDARD_ACCOUNT_PROFILE, target),
-    llm: {
-      baseUrl: HERMES_LLM_BASE_URL,
-      model: HERMES_MODEL,
-      apiKey: vk.value,
-    },
-    xmppEnabled: true,
+    llm: { apiKey: vk.value },
+    agent: { username: agentName, password: agentPassword },
   });
 
   if (result.status === "succeeded") {
@@ -228,34 +234,7 @@ export async function provisionStandardAccount(opts: {
   return result;
 }
 
-/**
- * Pushes the shared password to Snikket and to the user's Hermes XMPP config
- * (rotating the app/web password). The Hermes LLM key is NOT rotated -- only
- * reset-password uses this, and keeping the key avoids churn on the gateway.
- */
-export async function syncSharedPassword(opts: {
-  user: Pick<User, "id" | "username">;
-  password: string;
-  createdBy: number | null;
-}): Promise<ProvisionResult> {
-  const db = getDb();
-  const host = snikketHost(db);
-  const account = getAccountForUser(db, opts.user.id);
-  if (!account) {
-    throw new Error("account not provisioned; cannot sync Hermes credentials");
-  }
-  const steps = stepsFor(db, SHARED_CREDENTIALS_PROFILE, account.host);
-  return runJob({
-    ...opts,
-    profile: SHARED_CREDENTIALS_PROFILE,
-    jobHostId: host.id,
-    steps,
-    llm: { baseUrl: HERMES_LLM_BASE_URL, model: HERMES_MODEL },
-    xmppEnabled: true,
-  });
-}
-
-/** Re-pushes the shared password to Snikket only (used on disable). */
+/** Re-pushes the shared password to Snikket only (used on reset/disable). */
 export async function syncSnikketPassword(opts: {
   user: Pick<User, "id" | "username">;
   password: string;
