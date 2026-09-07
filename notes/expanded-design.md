@@ -287,10 +287,26 @@ the scripts never manage other services' containers.
 ## Provisioning tenant accounts (implemented)
 
 Users are created in the app with a target machine; creating one runs the `standard-account`
-profile **inline** (Linux account on the chosen host via `scripts/account/ensure.sh`, then a
-Snikket account via `scripts/snikket/ensure-account.sh`) so the shared web/XMPP plaintext
-never rests anywhere — it travels only in-memory to the remote step. The run is recorded as
-an audit `jobs`/`job_steps` row (status + output log; secrets never logged).
+profile **inline** (Linux account on the chosen host via `scripts/account/ensure.sh`, a Snikket
+account for the tenant via `scripts/snikket/ensure-account.sh`, a second Snikket account
+`<user>-agent` for the tenant's **Hermes agent**, and `scripts/hermes/ensure.sh` on the
+user-host) so the shared web/XMPP plaintext never rests anywhere — it travels only in-memory
+to the remote step. The run is recorded as an audit `jobs`/`job_steps` row (status + output
+log; secrets never logged).
+
+- Hermes (github.com/NousResearch/hermes-agent, per-user `~/.hermes`) runs as a **user
+  systemd unit** (`hermes-gateway`, linger enabled) and talks to the LLM through the Bifrost
+  gateway: `model.provider custom` + `https://<llm>/v1`, default model, and a **per-user
+  virtual key** issued app-side at provisioning (`server/bifrost.ts`; only the key id is
+  stored on `accounts.bifrost_vk_id`, never the secret). The XMPP plugin logs the agent in as
+  `<user>-agent@<domain>` and allows only the tenant's own account — tenants message their
+  agent from the Snikket account they were provisioned.
+- Lifecycle: re-provision/enable rotate the shared password **and** issue a fresh key
+  (deactivating the old). Reset-password rotates only the tenant web/XMPP credential (the
+  agent's key/account are untouched). Disable randomizes the tenant XMPP password, deactivates
+  the agent's key, and stops the gateway.
+- Tables: `hosts` (seeded from `server/inventory.ts`, env-overridable), `accounts`
+  (user↔host link + status + `bifrost_vk_id`), `jobs` + `job_steps`.
 
 - Tables: `hosts` (seeded from `server/inventory.ts`, env-overridable), `accounts`
   (user↔host link + status), `jobs` + `job_steps`.
