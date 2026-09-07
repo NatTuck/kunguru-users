@@ -16,7 +16,7 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
-    "types": ["node"],
+    "types": ["node", "vite/client"],
     "noEmit": true
   },
   "include": ["vite.config.ts", "server", "client", "src"]

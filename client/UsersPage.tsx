@@ -1,5 +1,18 @@
 import { useEffect, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { FormEvent } from "react";
+import {
+  Alert,
+  Button,
+  Input,
+  Label,
+  ListBox,
+  Radio,
+  RadioGroup,
+  Select,
+  Spinner,
+  Table,
+} from "@heroui/react";
+import type { Key } from "@heroui/react";
 import { useAuthStore } from "./authStore";
 import { useHostsStore } from "./hostsStore";
 import { useUsersStore } from "./usersStore";
@@ -10,6 +23,7 @@ import type {
   PasswordReveal,
   Role,
 } from "./types";
+import { ModalShell, Mono, StatusChip } from "./ui";
 
 export default function UsersPage() {
   const me = useAuthStore((s) => s.user);
@@ -29,7 +43,6 @@ export default function UsersPage() {
     resetPassword,
     provision,
     clearReveal,
-    clearActionError,
   } = useUsersStore();
 
   useEffect(() => {
@@ -38,208 +51,324 @@ export default function UsersPage() {
   }, [load, loadHosts]);
 
   const [username, setUsername] = useState("");
-  const [role, setRoleChoice] = useState<Role>("user");
-  const [hostId, setHostId] = useState<number | null>(null);
+  const [roleKey, setRoleKey] = useState<Key | null>("user");
+  const [hostKey, setHostKey] = useState<Key | null>(null);
   const [confirmDisable, setConfirmDisable] = useState<number | null>(null);
   const [provisionFor, setProvisionFor] = useState<AdminUser | null>(null);
-  const [provisionHost, setProvisionHost] = useState<number | null>(null);
+  const [provisionHost, setProvisionHost] = useState<string | null>(null);
   const [jobOpen, setJobOpen] = useState<JobDetail | null>(null);
 
   useEffect(() => {
-    if (hostId == null && hosts.length > 0) setHostId(hosts[0].id);
-  }, [hosts, hostId]);
-
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!username.trim()) return;
-    await create(username.trim(), role, hostId ?? hosts[0]?.id ?? 0);
-    setUsername("");
-    setRoleChoice("user");
-    if (hostId != null) setHostId(hostId);
-  };
+    if (hostKey == null && hosts.length > 0) setHostKey(hosts[0].id);
+  }, [hosts, hostKey]);
 
   const provisionable = (u: AdminUser) => !u.account || u.account.status !== "active";
 
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!username.trim() || hostKey == null) return;
+    await create(username.trim(), (roleKey ?? "user") as Role, Number(hostKey));
+    setUsername("");
+    setRoleKey("user");
+  };
+
   return (
     <div>
-      <h1>Manage users</h1>
+      <div className="mb-6">
+        <h1 className="text-2xl font-semibold tracking-tight">Manage users</h1>
+        <p className="mt-1 text-sm text-neutral-500">
+          Creating a user provisions a Linux account on the chosen machine and a matching XMPP
+          account on Snikket, sharing one password.
+        </p>
+      </div>
+
       {actionError && (
-        <p style={{ color: "crimson" }}>
-          {actionError}{" "}
-          <button onClick={clearActionError} type="button">
-            dismiss
-          </button>
-        </p>
+        <div className="mb-4">
+          <Alert status="danger">
+            <Alert.Content>
+              <Alert.Description>{actionError}</Alert.Description>
+            </Alert.Content>
+          </Alert>
+        </div>
       )}
 
-      <section style={{ marginBottom: "1.5rem" }}>
-        <h2>Create user</h2>
-        <form onSubmit={onSubmit}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              placeholder="username (lowercase)"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              pattern="[a-z][a-z0-9._-]{0,31}"
-              title="lowercase letters/digits/._- , starting with a letter"
-            />
-            <select value={role} onChange={(e) => setRoleChoice(e.target.value as Role)}>
-              <option value="user">user</option>
-              <option value="admin">admin</option>
-            </select>
-            <select
-              value={hostId ?? hosts[0]?.id ?? ""}
-              onChange={(e) => setHostId(Number(e.target.value))}
-              disabled={hostsLoading || hostsError != null}
-            >
-              {hostsError && <option value="">hosts unavailable</option>}
-              {!hostsError &&
-                hosts.map((h) => (
-                  <option key={h.id} value={h.id}>
-                    {h.name} ({h.role})
-                  </option>
-                ))}
-            </select>
-            <button type="submit" disabled={busy || hostsError != null}>
-              Create &amp; provision
-            </button>
-          </div>
-          {hostsLoading && <p style={{ fontSize: ".85rem" }}>loading machines…</p>}
-        </form>
-        <p style={{ fontSize: ".85rem", color: "#666" }}>
-          First machine shown is a user-server; machines with other roles sort later. Creating
-          a user provisions a Linux account on the chosen machine and a matching XMPP account
-          on Snikket, sharing one password.
-        </p>
-      </section>
+      {/* Create user */}
+      <form
+        onSubmit={onSubmit}
+        className="mb-8 flex flex-wrap items-end gap-3 rounded-2xl border border-neutral-200 bg-white p-4"
+      >
+        <div className="flex min-w-52 flex-col gap-1.5">
+          <label htmlFor="new-username" className="text-sm font-medium">
+            Username
+          </label>
+          <Input
+            id="new-username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="jane"
+            pattern="[a-z][a-z0-9._-]{0,31}"
+            required
+          />
+        </div>
+        <Select
+          className="min-w-36"
+          value={roleKey}
+          onChange={(v) => setRoleKey(v)}
+          placeholder="Role"
+        >
+          <Label>Role</Label>
+          <Select.Trigger>
+            <Select.Value />
+            <Select.Indicator />
+          </Select.Trigger>
+          <Select.Popover>
+            <ListBox>
+              <ListBox.Item id="user" textValue="user">
+                user
+              </ListBox.Item>
+              <ListBox.Item id="admin" textValue="admin">
+                admin
+              </ListBox.Item>
+            </ListBox>
+          </Select.Popover>
+        </Select>
+        <Select
+          className="min-w-56"
+          value={hostKey}
+          onChange={(v) => setHostKey(v)}
+          placeholder="Machine"
+          isDisabled={hostsLoading || hostsError != null}
+        >
+          <Label>Target machine</Label>
+          <Select.Trigger>
+            <Select.Value />
+            <Select.Indicator />
+          </Select.Trigger>
+          <Select.Popover>
+            <ListBox>
+              {hosts.map((h) => (
+                <ListBox.Item key={h.id} id={h.id} textValue={`${h.name} (${h.role})`}>
+                  {h.name} ({h.role})
+                </ListBox.Item>
+              ))}
+            </ListBox>
+          </Select.Popover>
+        </Select>
+        <Button type="submit" variant="primary" isDisabled={busy || hostKey == null}>
+          {busy ? (
+            <span className="inline-flex items-center gap-2">
+              <Spinner size="sm" /> Creating…
+            </span>
+          ) : (
+            "Create"
+          )}
+        </Button>
+      </form>
 
-      {loading && <p>Loading users…</p>}
-      {listError && <p style={{ color: "crimson" }}>{listError}</p>}
-
-      {!loading && !listError && (
-        <table border={1} cellPadding={8} style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Username</th>
-              <th>Role</th>
-              <th>Provisioned</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => {
-              const isSelf = me?.id === u.id;
-              const nextRole: Role = u.role === "admin" ? "user" : "admin";
-              return (
-                <tr key={u.id}>
-                  <td>{u.id}</td>
-                  <td>
-                    {u.username} {isSelf ? "(you)" : ""}{" "}
-                    {!u.enabled && (
-                      <em style={{ color: "crimson" }}>(disabled)</em>
-                    )}
-                  </td>
-                  <td>{u.role}</td>
-                  <td>
-                    {u.account ? (
-                      <>
-                        {u.account.hostName}{" "}
-                        <em style={{ color: u.account.status === "active" ? "green" : "crimson" }}>
-                          ({u.account.status})
-                        </em>
-                      </>
-                    ) : (
-                      <em>— not provisioned</em>
-                    )}
-                  </td>
-                  <td>{u.created_at}</td>
-                  <td>
-                    {!u.enabled ? (
-                      <button disabled={busy} onClick={() => void enable(u.id)}>
-                        Enable
-                      </button>
-                    ) : (
-                      <>
-                        <button
-                          disabled={busy || isSelf}
-                          onClick={() => void setRole(u.id, nextRole)}
-                          title={isSelf ? "cannot change your own role" : undefined}
-                        >
-                          Make {nextRole}
-                        </button>{" "}
-                        <button disabled={busy} onClick={() => void resetPassword(u.id)}>
-                          Reset password
-                        </button>{" "}
-                        {provisionable(u) && (
-                          <button
-                            disabled={busy}
-                            onClick={() => {
-                              setProvisionFor(u);
-                              setProvisionHost(u.account?.hostId ?? hosts[0]?.id ?? null);
-                            }}
-                          >
-                            {u.account ? "Repair" : "Provision"}
-                          </button>
-                        )}{" "}
-                        {confirmDisable === u.id ? (
-                          <span>
-                            Disable? (blocks login, randomizes XMPP pw){" "}
-                            <button disabled={busy} onClick={() => void disable(u.id)}>
-                              Disable
-                            </button>{" "}
-                            <button onClick={() => setConfirmDisable(null)}>Cancel</button>
-                          </span>
-                        ) : (
-                          <button
-                            disabled={busy || isSelf}
-                            onClick={() => setConfirmDisable(u.id)}
-                          >
-                            Disable
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      {loading ? (
+        <div className="flex items-center gap-2 text-neutral-500">
+          <Spinner size="sm" /> Loading users…
+        </div>
+      ) : listError ? (
+        <Alert status="danger">
+          <Alert.Content>
+            <Alert.Description>{listError}</Alert.Description>
+          </Alert.Content>
+        </Alert>
+      ) : (
+        <div className="overflow-x-auto rounded-2xl border border-neutral-200 bg-white">
+          <Table className="w-full">
+            <Table.ScrollContainer>
+              <Table.Content aria-label="Users">
+                <Table.Header>
+                  <Table.Column isRowHeader>User</Table.Column>
+                  <Table.Column>Role</Table.Column>
+                  <Table.Column>Provisioned</Table.Column>
+                  <Table.Column>Created</Table.Column>
+                  <Table.Column>Actions</Table.Column>
+                </Table.Header>
+                <Table.Body>
+                  {users.map((u) => (
+                    <UserRow
+                      key={u.id}
+                      user={u}
+                      meId={me?.id}
+                      busy={busy}
+                      provisionable={provisionable(u)}
+                      confirmDisable={confirmDisable === u.id}
+                      onRequestDisable={() => setConfirmDisable(u.id)}
+                      onCancelDisable={() => setConfirmDisable(null)}
+                      onDisable={() => {
+                        void disable(u.id);
+                        setConfirmDisable(null);
+                      }}
+                      onEnable={() => void enable(u.id)}
+                      onRole={() => void setRole(u.id, u.role === "admin" ? "user" : "admin")}
+                      onReset={() => void resetPassword(u.id)}
+                      onProvision={() => {
+                        setProvisionFor(u);
+                        const firstHost = hosts[0]?.id;
+                        setProvisionHost(u.account ? String(u.account.hostId) : firstHost != null ? String(firstHost) : null);
+                      }}
+                    />
+                  ))}
+                </Table.Body>
+              </Table.Content>
+            </Table.ScrollContainer>
+          </Table>
+        </div>
       )}
 
-      {reveal && <PasswordModal reveal={reveal} onClose={clearReveal} onViewJob={openJob} />}
+      {reveal && (
+        <RevealModal
+          reveal={reveal}
+          onClose={clearReveal}
+          onViewJob={(id) => {
+            void useUsersStore
+              .getState()
+              .job(id)
+              .then(setJobOpen)
+              .catch(() => setJobOpen(null));
+          }}
+        />
+      )}
       {provisionFor && (
         <ProvisionModal
           user={provisionFor}
           hosts={hosts}
-          hostId={provisionHost}
+          hostKey={provisionHost}
           onHost={(id) => setProvisionHost(id)}
           onClose={() => setProvisionFor(null)}
           onConfirm={() => {
             if (provisionFor && provisionHost != null) {
-              void provision(provisionFor.id, provisionHost);
+              void provision(provisionFor.id, Number(provisionHost));
               setProvisionFor(null);
             }
           }}
         />
       )}
-      {jobOpen && <JobLogModal detail={jobOpen} onClose={() => setJobOpen(null)} />}
+      {jobOpen && (
+        <JobLogModal detail={jobOpen} onClose={() => setJobOpen(null)} />
+      )}
     </div>
   );
-
-  function openJob(id: number) {
-    void useUsersStore
-      .getState()
-      .job(id)
-      .then(setJobOpen)
-      .catch(() => setJobOpen(null));
-  }
 }
 
-function PasswordModal({
+function UserRow({
+  user: u,
+  meId,
+  busy,
+  provisionable: canProvision,
+  confirmDisable,
+  onRequestDisable,
+  onCancelDisable,
+  onDisable,
+  onEnable,
+  onRole,
+  onReset,
+  onProvision,
+}: {
+  user: AdminUser;
+  meId?: number;
+  busy: boolean;
+  provisionable: boolean;
+  confirmDisable: boolean;
+  onRequestDisable: () => void;
+  onCancelDisable: () => void;
+  onDisable: () => void;
+  onEnable: () => void;
+  onRole: () => void;
+  onReset: () => void;
+  onProvision: () => void;
+}) {
+  const isSelf = meId === u.id;
+  const disabled = !u.enabled;
+  return (
+    <Table.Row>
+      <Table.Cell>
+        <div className="flex items-center gap-2">
+          <span className={disabled ? "text-neutral-400 line-through" : undefined}>
+            {u.username}
+          </span>
+          {isSelf && <StatusChip label="you" tone="accent" />}
+          {disabled && <StatusChip label="disabled" tone="danger" />}
+        </div>
+      </Table.Cell>
+      <Table.Cell>
+        <StatusChip label={u.role} tone={u.role === "admin" ? "accent" : "neutral"} />
+      </Table.Cell>
+      <Table.Cell>
+        {u.account ? (
+          <div className="flex items-center gap-2">
+            <span className="text-sm">{u.account.hostName}</span>
+            <StatusChip
+              label={u.account.status}
+              tone={
+                u.account.status === "active"
+                  ? "success"
+                  : u.account.status === "failed"
+                    ? "danger"
+                    : "warning"
+              }
+            />
+          </div>
+        ) : (
+          <span className="text-sm text-neutral-400">— not provisioned</span>
+        )}
+      </Table.Cell>
+      <Table.Cell>
+        <span className="text-sm text-neutral-600">{u.created_at}</span>
+      </Table.Cell>
+      <Table.Cell>
+        {disabled ? (
+          <Button size="sm" variant="primary" isDisabled={busy} onPress={onEnable}>
+            Enable
+          </Button>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              isDisabled={busy || isSelf}
+              onPress={onRole}
+            >
+              Make {u.role === "admin" ? "user" : "admin"}
+            </Button>
+            <Button size="sm" variant="outline" isDisabled={busy} onPress={onReset}>
+              Reset password
+            </Button>
+            {canProvision && (
+              <Button size="sm" variant="secondary" isDisabled={busy} onPress={onProvision}>
+                {u.account ? "Repair" : "Provision"}
+              </Button>
+            )}
+            {confirmDisable ? (
+              <span className="flex items-center gap-1">
+                <Button size="sm" variant="danger" isDisabled={busy} onPress={onDisable}>
+                  Confirm disable
+                </Button>
+                <Button size="sm" variant="tertiary" onPress={onCancelDisable}>
+                  Cancel
+                </Button>
+              </span>
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                isDisabled={busy || isSelf}
+                onPress={onRequestDisable}
+              >
+                Disable
+              </Button>
+            )}
+          </div>
+        )}
+      </Table.Cell>
+    </Table.Row>
+  );
+}
+
+function RevealModal({
   reveal,
   onClose,
   onViewJob,
@@ -250,170 +379,160 @@ function PasswordModal({
 }) {
   const [copied, setCopied] = useState(false);
   const prov = reveal.provisioning;
-  const failed = prov && !prov.ok;
+  const title =
+    reveal.kind === "create"
+      ? `User created — ${reveal.user.username}`
+      : reveal.kind === "reset"
+        ? `Password reset — ${reveal.user.username}`
+        : reveal.kind === "enable"
+          ? `User enabled — ${reveal.user.username}`
+          : `User provisioned — ${reveal.user.username}`;
+
   return (
-    <Overlay>
-      <h2>
-        {reveal.kind === "create"
-          ? "User created"
-          : reveal.kind === "reset"
-            ? "Password reset"
-            : reveal.kind === "enable"
-              ? "User enabled"
-              : "User provisioned"}{" "}
-        — {reveal.user.username}
-      </h2>
-      <p>
-        Password for <strong>{reveal.user.username}</strong>:
-      </p>
-      <p>
-        <code
-          style={{
-            display: "block",
-            padding: 8,
-            background: "#f4f4f4",
-            userSelect: "all",
-            fontSize: "1.1rem",
-          }}
-        >
-          {reveal.password}
-        </code>
-      </p>
-      <p>
-        This is shown <strong>only once</strong>. Share it securely; it will not be shown again.
-      </p>
-      {prov && prov.ok && (
-        <p style={{ color: "green" }}>Provisioning succeeded (Linux + XMPP).</p>
-      )}
-      {failed && (
-        <p style={{ color: "crimson" }}>
-          Provisioning did not fully succeed{prov.failedStep ? ` at step "${prov.failedStep}"` : ""}
-          {prov.message ? `: ${prov.message}` : ""}.
-          {prov.jobId != null && (
-            <>
-              {" "}
-              <button onClick={() => onViewJob(prov.jobId as number)}>View log</button>
-            </>
-          )}
+    <ModalShell open onClose={onClose} title={title} width="sm:max-w-[440px]">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-600">
+          Password for <strong>{reveal.user.username}</strong> — shown only once:
         </p>
-      )}
-      <button
-        onClick={() => {
-          void navigator.clipboard.writeText(reveal.password);
-          setCopied(true);
-        }}
-      >
-        {copied ? "Copied" : "Copy"}
-      </button>{" "}
-      <button onClick={onClose}>Close</button>
-    </Overlay>
+        <Mono>{reveal.password}</Mono>
+        {prov?.ok ? (
+          <Alert status="success">
+            <Alert.Content>
+              <Alert.Description>Provisioning succeeded (Linux + XMPP).</Alert.Description>
+            </Alert.Content>
+          </Alert>
+        ) : prov && !prov.ok ? (
+          <Alert status="danger">
+            <Alert.Content>
+              <Alert.Title>Provisioning did not fully succeed</Alert.Title>
+              <Alert.Description>
+                {prov.failedStep ? `Failed at step "${prov.failedStep}". ` : ""}
+                {prov.message ? `${prov.message} ` : ""}
+                The Linux/XMPP accounts may be partially applied; use Repair once things are
+                reachable.
+              </Alert.Description>
+            </Alert.Content>
+          </Alert>
+        ) : null}
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="primary"
+            onPress={() => {
+              void navigator.clipboard.writeText(reveal.password);
+              setCopied(true);
+            }}
+          >
+            {copied ? "Copied" : "Copy password"}
+          </Button>
+          {prov?.jobId != null && (
+            <Button size="sm" variant="outline" onPress={() => onViewJob(prov.jobId as number)}>
+              View log
+            </Button>
+          )}
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
 function ProvisionModal({
-  user,
+  user: u,
   hosts,
-  hostId,
+  hostKey,
   onHost,
   onClose,
   onConfirm,
 }: {
   user: AdminUser;
   hosts: Host[];
-  hostId: number | null;
-  onHost: (id: number) => void;
+  hostKey: string | null;
+  onHost: (id: string) => void;
   onClose: () => void;
   onConfirm: () => void;
 }) {
   return (
-    <Overlay>
-      <h2>{user.account ? "Repair provisioning" : "Provision"} — {user.username}</h2>
-      {user.account && (
-        <p>
-          Re-provisioning rotates the password (the old value is not retained), then re-applies
-          the Linux + XMPP accounts.
-        </p>
-      )}
-      {hosts.length === 0 ? (
-        <p>No machines available.</p>
-      ) : (
-        <div>
-          {hosts.map((h) => (
-            <label key={h.id} style={{ display: "block", marginBottom: 4 }}>
-              <input
-                type="radio"
-                name="host"
-                checked={hostId === h.id}
-                onChange={() => onHost(h.id)}
-              />
-              {h.name} ({h.role})
-            </label>
-          ))}
+    <ModalShell
+      open
+      onClose={onClose}
+      title={`${u.account ? "Repair provisioning" : "Provision"} — ${u.username}`}
+      width="sm:max-w-[460px]"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="tertiary" onPress={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" isDisabled={hostKey == null} onPress={onConfirm}>
+            Provision on selected machine
+          </Button>
         </div>
-      )}
-      <button disabled={hostId == null} onClick={onConfirm}>
-        Provision on selected machine
-      </button>{" "}
-      <button onClick={onClose}>Cancel</button>
-    </Overlay>
+      }
+    >
+      <div className="space-y-3">
+        {u.account && (
+          <Alert status="warning">
+            <Alert.Content>
+              <Alert.Description>
+                Re-provisioning rotates the password (the old value is not retained), then
+                re-applies the Linux + XMPP accounts.
+              </Alert.Description>
+            </Alert.Content>
+          </Alert>
+        )}
+        {hosts.length === 0 ? (
+          <p className="text-sm text-neutral-500">No machines available.</p>
+        ) : (
+          <>
+            <div className="text-sm font-medium">Target machine</div>
+            <RadioGroup
+              value={hostKey}
+              onChange={(v) => onHost(v ?? "")}
+              className="gap-2"
+            >
+              {hosts.map((h) => (
+                <Radio key={h.id} value={String(h.id)}>
+                  <Radio.Content>
+                    {h.name} <span className="text-neutral-400">({h.role})</span>
+                  </Radio.Content>
+                </Radio>
+              ))}
+            </RadioGroup>
+          </>
+        )}
+      </div>
+    </ModalShell>
   );
 }
 
 function JobLogModal({ detail, onClose }: { detail: JobDetail; onClose: () => void }) {
   return (
-    <Overlay wide>
-      <h2>
-        Job #{detail.job.id} — {detail.job.profile} ({detail.job.status})
-      </h2>
-      {detail.job.host_name && <p>host: {detail.job.host_name}</p>}
-      {detail.steps.map((s) => (
-        <div key={s.id} style={{ marginBottom: 12 }}>
-          <strong>
-            #{s.seq + 1} {s.script} → {s.target_ssh} ({s.status}
-            {s.exit_code != null ? `, exit ${s.exit_code}` : ""})
-          </strong>
-          <pre
-            style={{
-              whiteSpace: "pre-wrap",
-              background: "#f4f4f4",
-              padding: 8,
-              maxHeight: 200,
-              overflow: "auto",
-            }}
-          >
-            {s.output_log || "(no output)"}
-          </pre>
+    <ModalShell open onClose={onClose} title={`Job #${detail.job.id} — ${detail.job.profile}`} width="sm:max-w-[720px]">
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-neutral-500">Host:</span>
+          <span>{detail.job.host_name ?? "—"}</span>
+          <StatusChip label={detail.job.status} tone={detail.job.status === "succeeded" ? "success" : "danger"} />
         </div>
-      ))}
-      <button onClick={onClose}>Close</button>
-    </Overlay>
-  );
-}
-
-function Overlay({ children, wide }: { children: ReactNode; wide?: boolean }) {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,.4)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 10,
-      }}
-    >
-      <div
-        style={{
-          background: "#fff",
-          padding: "1.5rem",
-          maxWidth: wide ? 760 : 460,
-          width: wide ? "90vw" : undefined,
-          borderRadius: 8,
-        }}
-      >
-        {children}
+        {detail.steps.map((s) => (
+          <div key={s.id} className="rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-medium">
+                {s.script} → {s.target_ssh}
+              </span>
+              <StatusChip
+                label={s.status}
+                tone={s.status === "succeeded" ? "success" : "danger"}
+              />
+              {s.exit_code != null && (
+                <span className="text-neutral-400">exit {s.exit_code}</span>
+              )}
+            </div>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-white p-3 font-mono text-xs">
+              {s.output_log || "(no output)"}
+            </pre>
+          </div>
+        ))}
       </div>
-    </div>
+    </ModalShell>
   );
 }
