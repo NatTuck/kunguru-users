@@ -5,7 +5,8 @@
 #   * passwordless ssh access for the controller (ssh-access)
 #   * WireGuard hub adopt/verify (wireguard)
 #   * Snikket containers on the gateway (snikket)
-#   * nginx owning 80/443 + Snikket reverse proxy (nginx)
+#   * Bifrost LLM gateway containers on the gateway (bifrost)
+#   * nginx owning 80/443 + Snikket/Bifrost reverse proxies (nginx)
 #
 # Run it from ANY machine that can reach the group over ssh (it does not need
 # to be the host the web app runs on):
@@ -83,7 +84,8 @@ echo "  sudo:  $(sudo -n true 2>/dev/null && echo ok || echo FAIL)"
 echo "  wg:    $(ip -brief addr show 2>/dev/null | grep -q wg && echo up || echo down)  $(systemctl is-active wg-quick@wg0 2>/dev/null || true)"
 echo "  docker:$(command -v docker >/dev/null && docker --version || echo none)"
 echo "  nginx: $(command -v nginx >/dev/null && nginx -v 2>&1 || echo none)"
-  echo "  snikket:$(docker inspect snikket >/dev/null 2>&1 && echo containers-present || (test -d /etc/snikket && echo config-only || echo none))"'
+  echo "  snikket:$(docker inspect snikket >/dev/null 2>&1 && echo containers-present || (test -d /etc/snikket && echo config-only || echo none))"
+  echo "  bifrost:$(b=$(docker inspect -f '{{.State.Running}}' bifrost 2>/dev/null); case "$b" in true) echo up;; false) echo down;; *) echo none;; esac)"'
   ssh -o BatchMode=yes -o ConnectTimeout=10 "${user}@${rhost}" 'sudo -n bash -s' <<<"$stmt"
 }
 
@@ -131,13 +133,25 @@ apply_step_snikket() {
     SNIKKET_TWEAK_HTTPS_PORT="${SNIKKET_TWEAK_HTTPS_PORT:-5443}"
 }
 
+apply_step_bifrost() {
+  local bhost="${BIFROST_HOST:-$HUB}"
+  step "bifrost (${bhost})"
+  run_remote "$BOOTSTRAP_SSH_USER" "${SSH_BY_HOST[$bhost]}" ensure-bifrost.sh \
+    BIFROST_PORT="${BIFROST_PORT:-8181}" \
+    BIFROST_IMAGE="${BIFROST_IMAGE:-maximhq/bifrost:v2.0.0}" \
+    BIFROST_DOMAIN="${BIFROST_DOMAIN:-}" \
+    BIFROST_ADMIN_USERNAME="${BIFROST_ADMIN_USERNAME:-admin}"
+}
+
 apply_step_nginx() {
   step "nginx (${HUB} owns 80/443)"
   run_remote "$BOOTSTRAP_SSH_USER" "$(ssh_addr "$HUB")" ensure-nginx.sh \
     SNIKKET_DOMAIN="$SNIKKET_DOMAIN" \
     SNIKKET_TWEAK_HTTP_PORT="${SNIKKET_TWEAK_HTTP_PORT:-5080}" \
     SNIKKET_TWEAK_HTTPS_PORT="${SNIKKET_TWEAK_HTTPS_PORT:-5443}" \
-    WG_IFACE="$WG_IFACE" DNAT_TARGETS="${DNAT_TARGETS:-10.0.1.2}"
+    WG_IFACE="$WG_IFACE" DNAT_TARGETS="${DNAT_TARGETS:-10.0.1.2}" \
+    BIFROST_DOMAIN="${BIFROST_DOMAIN:-}" \
+    BIFROST_PORT="${BIFROST_PORT:-8181}"
 }
 
 # Wait for Snikket's cert-manager to obtain certs (proxied through nginx :80).
@@ -158,6 +172,7 @@ do_apply() {
   [[ -z "$ONLY" || "$ONLY" == "ssh-access" ]] && apply_step_ssh_access
   [[ -z "$ONLY" || "$ONLY" == "wireguard" ]] && apply_step_wireguard
   if [[ -z "$ONLY" || "$ONLY" == "snikket" ]]; then apply_step_snikket; fi
+  if [[ -z "$ONLY" || "$ONLY" == "bifrost" ]]; then apply_step_bifrost; fi
   if [[ -z "$ONLY" || "$ONLY" == "nginx" ]]; then apply_step_nginx; fi
 
   # Snikket's cert-manager obtains certs on its OWN schedule (startup + hourly
@@ -193,6 +208,7 @@ do_check() {
   echo "  hub:            $HUB ($PUBLIC_FQDN / $PUBLIC_IP)"
   echo "  ssh user:       $BOOTSTRAP_SSH_USER (init via ${INIT_SSH_USER:-<none>})"
   echo "  snikket domain: ${SNIKKET_DOMAIN:-<unset>} on ${SNIKKET_HOST}"
+  echo "  bifrost:        ${BIFROST_DOMAIN:-<unset>} on ${BIFROST_HOST:-$HUB}"
   for h in "${!HOST_ROLES[@]}"; do
     echo "== ${h} [${HOST_ROLES[$h]}] =="
     run_check "$BOOTSTRAP_SSH_USER" "$(ssh_addr "$h")" || \

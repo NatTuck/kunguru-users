@@ -44,7 +44,10 @@ across one or more servers with roles, over a WireGuard VPN.
   the gateway).
 - LLMs locally, from cloud providers, or a mix — through the Bifrost gateway
   (https://docs.getbifrost.ai/) which does model renaming, per-user usage/quota,
-  and is the intended LLM chokepoint for hosted agents.
+  and is the intended LLM chokepoint for hosted agents. The gateway itself is
+  **deployed** as a core component in the initial-install bootstrap (see
+  "Snikket / Bifrost integration" below); the *mix* of providers behind it is
+  the future part.
 
 ## Stack decision
 
@@ -205,15 +208,21 @@ logical credential set.
 - No ssh password for normal accounts; Linux account auth is key-only.
 - Generated passwords are high-entropy because they protect open, unthrottled services.
 
-## Snikket / Bifrost integration (later)
+## Snikket / Bifrost integration (deployed; app automation later)
 
 - Snikket is containerized. Some ops require shelling into the Snikket docker container;
   that jank lives in **one place** (`xmpp/*` scripts) behind a typed operation, not
   scattered.
-- Bifrost: gateway for LLM providers, model renaming, per-user usage/quota. Intended
-  chokepoint for hosted agents. Model renaming enables transparent model swaps. Usage/
-  quota can only be enforced for traffic through the gateway — users who bring their own
-  providers pay for their own tokens, so Bifrost hooks (not hard enforcement).
+- Bifrost (the LLM gateway: provider aggregation, model aliasing/renaming, per-user
+  virtual keys with budgets/limits and usage tracking) is deployed as a **core component
+  on the hub** by the initial-install bootstrap — `ensure-bifrost.sh`, dashboard/API at
+  `https://llm.<base>`, see `notes/initial-setup.md`. Model renaming enables transparent
+  model swaps. Usage/quota can only be enforced for traffic through the gateway — users
+  who bring their own providers pay for their own tokens, so Bifrost hooks (not hard
+  enforcement).
+- Later (app automation): at provisioning time the app issues a per-user virtual key
+  through the Bifrost management API and records it against the `accounts` row; the
+  Hermes-facing model alias is set at the gateway, never per agent.
 
 ## Export / import
 
@@ -254,9 +263,16 @@ behind the transport seam later. Reads a gitignored `group.conf` inventory (temp
 - `ensure-nginx.sh` — makes nginx own 80/443 on the public gateway: deletes the legacy
   wg `DNAT` of :80/:443 → `10.0.1.2` (live iptables **and** stripped from `wg0.conf`
   PostUp/PostDown so it cannot return), installs nginx/certbot, writes the Snikket vhost
-  (+ an `ssl_reject_handshake` default so unknown HTTPS SNI is not served).
+  and, when `BIFROST_DOMAIN` is set, the Bifrost vhost (ACME webroot + streaming-safe
+  proxy; HTTPS once a certbot cert exists) (+ an `ssl_reject_handshake` default so
+  unknown HTTPS SNI is not served).
 - `ensure-snikket.sh` — Docker Snikket on host networking behind nginx, `SNIKKET_TWEAK_*`
   alt ports (5080/5443), converging `/etc/snikket/snikket.conf`.
+- `ensure-bifrost.sh` — Docker Bifrost LLM gateway pinned on `127.0.0.1:BIFROST_PORT`
+  behind nginx; converges `/etc/bifrost` (env file with a generated encryption key +
+  one-time dashboard admin password, and a `config.json` that seeds admin auth and
+  requires a virtual key on inference). Providers/virtual keys are operator-configured
+  in the dashboard afterwards (upstream keys are secrets and never in the repo).
 
 **Snikket TLS model (single ACME owner):** Snikket's cert-manager obtains/owns the
 certificates for `chat./groups.chat./share.chat.<base>` (its HTTP-01 is proxied through

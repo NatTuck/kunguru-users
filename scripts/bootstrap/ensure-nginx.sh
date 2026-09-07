@@ -28,6 +28,8 @@ http_port="${SNIKKET_TWEAK_HTTP_PORT:-5080}"
 https_port="${SNIKKET_TWEAK_HTTPS_PORT:-5443}"
 wg_iface="${WG_IFACE:-wg0}"
 container="${SNIKKET_SERVER_CONTAINER:-snikket}"
+bifrost_domain="${BIFROST_DOMAIN:-}"
+bifrost_port="${BIFROST_PORT:-8181}"
 wg_conf="/etc/wireguard/${wg_iface}.conf"
 
 apt_ensure nginx certbot python3-certbot-nginx
@@ -172,6 +174,96 @@ else
 fi
 rm -f "$tmp"
 [[ -e "/etc/nginx/sites-enabled/${site}" ]] || ln -s "$vhost" "/etc/nginx/sites-enabled/${site}"
+
+# ---------------------------------------------------------------------------
+# Bifrost LLM gateway vhost (optional; present only when BIFROST_DOMAIN is set)
+# ---------------------------------------------------------------------------
+# Serves https://<BIFROST_DOMAIN> -> the Bifrost container on 127.0.0.1:
+#   * :80  -> ACME webroot (certbot certonly --webroot) + proxy
+#   * :443 -> when a certbot cert exists for the name, terminate TLS with it and
+#             proxy with streaming-safe settings (SSE / WebSocket)
+# certbot is the ACME owner here (Snikket names are never touched by it).
+if [[ -n "${bifrost_domain}" ]]; then
+  mkdir -p /var/www/certbot
+  bsite="bifrost-${bifrost_domain%%.*}"
+  bvhost="/etc/nginx/sites-available/${bsite}"
+  has_bcert=0
+  if [[ -f "/etc/letsencrypt/live/${bifrost_domain}/fullchain.pem" && \
+        -f "/etc/letsencrypt/live/${bifrost_domain}/privkey.pem" ]]; then
+    has_bcert=1
+  fi
+  tmp="$(mktemp)"
+  {
+    cat <<EOF
+# Bifrost gateway (${bifrost_domain}) behind nginx -- managed by kunguru bootstrap.
+# HTTP: ACME webroot + proxy to the Bifrost container.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${bifrost_domain};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:${bifrost_port}/;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        client_max_body_size 104857616;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_set_header Connection \$http_connection;
+        proxy_set_header Upgrade \$http_upgrade;
+    }
+}
+EOF
+    if (( has_bcert )); then
+      cat <<EOF
+
+# HTTPS: terminate TLS with the certbot certificate; streaming-safe proxy.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name ${bifrost_domain};
+
+    ssl_certificate     /etc/letsencrypt/live/${bifrost_domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${bifrost_domain}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://127.0.0.1:${bifrost_port}/;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        client_max_body_size 104857616;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_set_header Connection \$http_connection;
+        proxy_set_header Upgrade \$http_upgrade;
+    }
+}
+EOF
+    fi
+  } >"$tmp"
+  changed=0
+  if [[ -f "$bvhost" ]] && cmp -s "$bvhost" "$tmp"; then
+    log "nginx bifrost vhost unchanged"
+  else
+    install -m 0644 -o root -g root "$tmp" "$bvhost"
+    changed=1
+    log "wrote nginx bifrost vhost: ${bvhost}"
+  fi
+  rm -f "$tmp"
+  [[ -e "/etc/nginx/sites-enabled/${bsite}" ]] || ln -s "$bvhost" "/etc/nginx/sites-enabled/${bsite}"
+fi
 
 # ---------------------------------------------------------------------------
 # Unknown-HTTPS-host rejection (avoids exposing Snikket certs to random SNI).
