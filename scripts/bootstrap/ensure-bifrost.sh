@@ -19,6 +19,9 @@
 #      BIFROST_BIND (default 127.0.0.1)  BIFROST_DOMAIN (informational, for the
 #      one-time credential banner)  BIFROST_ADMIN_USERNAME (default admin)
 #      BIFROST_CORS_ORIGINS (whitespace-separated origins, default "*")
+#      BIFROST_ADD_HOSTS (optional whitespace-separated "host:ip" entries added
+#      to the container via --add-host, so the gateway can reach hosts whose
+#      names only exist on this machine -- e.g. VPN/LAN peers in /etc/hosts)
 #
 # The `client` config section (CORS origins, enforce_auth_on_inference, ...) is
 # owned by this config.json: Bifrost re-applies it on startup, so UI edits to
@@ -35,6 +38,7 @@ dir="/etc/bifrost"
 env_file="${dir}/env"
 conf="${dir}/config.json"
 container="bifrost"
+read -r -a add_hosts <<< "${BIFROST_ADD_HOSTS:-}"
 
 umask 077
 
@@ -108,14 +112,21 @@ if [[ "${old_hash}" != "${new_hash}" ]] && \
   log "restarted ${container} to apply config.json"
 fi
 
-# --- Container converge (recreate only when image/port drifted) ---
+# --- Container converge (recreate only when image/port/add-hosts drifted) ---
+run_extra=()
+for h in "${add_hosts[@]}"; do
+  run_extra+=(--add-host "${h}")
+done
+
 if docker inspect "${container}" >/dev/null 2>&1; then
   cur_image="$(docker inspect -f '{{.Config.Image}}' "${container}" 2>/dev/null || true)"
   cur_port="$(docker port "${container}" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://' || true)"
-  if [[ "${cur_image}" == "${image}" && "${cur_port}" == "${port}" ]]; then
-    log "bifrost container present with matching image/port (adopting)"
+  cur_hosts="$(docker inspect -f '{{range .HostConfig.ExtraHosts}}{{println .}}{{end}}' "${container}" 2>/dev/null | sort)"
+  want_hosts="$(printf '%s\n' "${add_hosts[@]}" | sort)"
+  if [[ "${cur_image}" == "${image}" && "${cur_port}" == "${port}" && "${cur_hosts}" == "${want_hosts}" ]]; then
+    log "bifrost container present with matching image/port/add-hosts (adopting)"
   else
-    log "bifrost image/port drifted (${cur_image:-none}:${cur_port:-?} -> ${image}:${port}); recreating"
+    log "bifrost container drifted; recreating"
     docker rm -f "${container}" >/dev/null
   fi
 fi
@@ -130,6 +141,7 @@ if ! docker inspect "${container}" >/dev/null 2>&1; then
     -e APP_HOST=0.0.0.0 \
     -e APP_PORT=8080 \
     -e APP_DIR=/app/data \
+    "${run_extra[@]}" \
     -p "${bind}:${port}:8080" \
     -v "${dir}:/app/data" \
     "${image}" >/dev/null
