@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 
 // App-side client for the Bifrost LLM gateway (see notes/initial-setup.md §4).
@@ -109,26 +110,42 @@ export interface VirtualKey {
 export async function createVirtualKey(opts: {
   name: string;
 }): Promise<VirtualKey> {
-  const body = {
-    name: opts.name,
-    is_active: true,
-    provider_configs: BIFROST_PROVIDERS.map((provider) => ({
-      provider,
-      weight: 1,
-      allowed_models: ["*"],
-      key_ids: ["*"],
-    })),
-  };
-  const data = await api<{ virtual_key?: { id?: string; value?: string } }>(
-    "POST",
-    "/api/governance/virtual-keys",
-    body,
-  );
-  const vk = data?.virtual_key;
-  if (!vk?.id || !vk?.value) {
-    throw new Error("bifrost create virtual key: unexpected response (no id/value)");
+  // Virtual key names are unique even after deactivation, so make each
+  // issuance unique (a re-provision rotates the key).
+  const attempts: string[] = [opts.name];
+  for (let i = 0; i < 5; i++) {
+    attempts.push(`${opts.name}-${randomBytes(3).toString("hex")}`);
   }
-  return { id: vk.id, value: vk.value };
+  let lastErr: unknown;
+  for (const name of attempts) {
+    const body = {
+      name,
+      is_active: true,
+      provider_configs: BIFROST_PROVIDERS.map((provider) => ({
+        provider,
+        weight: 1,
+        allowed_models: ["*"],
+        key_ids: ["*"],
+      })),
+    };
+    try {
+      const data = await api<{ virtual_key?: { id?: string; value?: string } }>(
+        "POST",
+        "/api/governance/virtual-keys",
+        body,
+      );
+      const vk = data?.virtual_key;
+      if (!vk?.id || !vk?.value) {
+        throw new Error("bifrost create virtual key: unexpected response (no id/value)");
+      }
+      return { id: vk.id, value: vk.value };
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("already exists")) throw err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("bifrost create virtual key failed");
 }
 
 /** Enables/disables an existing virtual key (deactivate on disable/rotate). */
