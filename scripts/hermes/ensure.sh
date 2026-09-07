@@ -41,15 +41,16 @@ venv_py="${home}/.hermes/hermes-agent/venv/bin/python"
 hermes_bin="${home}/.local/bin/hermes"
 installer_url="https://hermes-agent.nousresearch.com/install.sh"
 
-# run_as_user CMD...: run as USERNAME with a clean but functional env and the
-# per-user systemd manager socket (XDG_RUNTIME_DIR) so systemctl --user works.
+# run_as_user CMD...: run as USERNAME with a clean but functional env, the
+# per-user systemd manager socket (XDG_RUNTIME_DIR) so systemctl --user works,
+# and cwd in the user's home (avoid tools walking up into e.g. kunguru's home).
 run_as_user() {
   runuser -u "$USERNAME" -- env -i \
     HOME="$home" \
     USER="$USERNAME" LOGNAME="$USERNAME" SHELL=/bin/bash \
     XDG_RUNTIME_DIR="/run/user/${uid}" \
     PATH="${home}/.local/bin:${home}/.hermes/hermes-agent/venv/bin:${home}/.hermes/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    bash -c "$1"
+    bash -c "cd '${home}' && $1"
 }
 
 if [[ "$action" == "stop" ]]; then
