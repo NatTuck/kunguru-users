@@ -94,8 +94,8 @@ fi
 if [[ -n "${XMPP_JID:-}" && -n "${XMPP_PASSWORD:-}" ]]; then
   # Stage the new/updated XMPP vars in a temp file the merge reads from, so
   # arbitrary password characters never pass through a shell command line.
+  # Write it while root-owned, then hand it to the user to read.
   stage="$(mktemp)"
-  chown "${USERNAME}" "${stage}"
   chmod 0600 "${stage}"
   {
     printf 'XMPP_JID=%s\n' "${XMPP_JID}"
@@ -106,6 +106,7 @@ if [[ -n "${XMPP_JID:-}" && -n "${XMPP_PASSWORD:-}" ]]; then
   if [[ -n "${XMPP_HOST:-}" ]]; then
     printf 'XMPP_HOST=%s\n' "${XMPP_HOST}" >> "${stage}"
   fi
+  chown "${USERNAME}" "${stage}"
   run_as_user "python3 - '${home}/.hermes/.env' '${stage}' <<'PY'
 import os, sys
 env_path, src = sys.argv[1], sys.argv[2]
