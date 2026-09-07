@@ -106,6 +106,22 @@ export interface VirtualKey {
   value: string;
 }
 
+export interface VirtualKeySummary {
+  id: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+/** Lists virtual keys visible to the admin account. */
+export async function listVirtualKeys(): Promise<VirtualKeySummary[]> {
+  const data = await api<{ virtual_keys?: VirtualKeySummary[] }>(
+    "GET",
+    "/api/governance/virtual-keys",
+  );
+  return data?.virtual_keys ?? [];
+}
+
 /** Creates an active per-user virtual key covering the configured providers. */
 export async function createVirtualKey(opts: {
   name: string;
@@ -157,5 +173,13 @@ export async function setVirtualKeyActive(
     "PUT",
     `/api/governance/virtual-keys/${encodeURIComponent(id)}`,
     { is_active: active },
+  );
+}
+
+/** Permanently removes a virtual key (used for failed-provision orphans). */
+export async function deleteVirtualKey(id: string): Promise<void> {
+  await api(
+    "DELETE",
+    `/api/governance/virtual-keys/${encodeURIComponent(id)}`,
   );
 }

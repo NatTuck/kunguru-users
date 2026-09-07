@@ -21,6 +21,7 @@ import {
 import { SCRIPTS_DIR, SNIKKET_HOST_NAME, SSH_USER } from "./inventory";
 import {
   createVirtualKey,
+  deleteVirtualKey,
   HERMES_LLM_BASE_URL,
   HERMES_MODEL,
   setVirtualKeyActive,
@@ -227,8 +228,9 @@ export async function provisionStandardAccount(opts: {
     }
     setAccountStatus(db, account.id, "active", result.jobId);
   } else {
-    // The fresh key was never used by a successful run; retire it.
-    await setVirtualKeyActive(vk.id, false).catch(() => undefined);
+    // The fresh key was never used by a successful run; remove it so failed
+    // provisions do not leave deactivated orphans behind.
+    await deleteVirtualKey(vk.id).catch(() => undefined);
     setAccountStatus(db, account.id, "failed", result.jobId);
   }
   return result;

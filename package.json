@@ -12,7 +12,8 @@
     "build": "vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit",
-    "reset-admin-pw": "tsx server/reset-admin-pw.ts"
+    "reset-admin-pw": "tsx server/reset-admin-pw.ts",
+    "bifrost-cleanup-keys": "tsx server/bifrost-cleanup-keys.ts"
   },
   "dependencies": {
     "@heroui/react": "^3.2.4",
