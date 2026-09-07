@@ -51,6 +51,7 @@ export interface Account {
   host_id: number;
   status: AccountStatus;
   last_job_id: number | null;
+  bifrost_vk_id: string | null;
 }
 
 export interface JobRow {
@@ -133,6 +134,7 @@ export const SCHEMA = `
     host_id INTEGER NOT NULL REFERENCES hosts(id),
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'failed')),
     last_job_id INTEGER REFERENCES jobs(id),
+    bifrost_vk_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (user_id, host_id)
   );
@@ -153,9 +155,13 @@ export function openDb(): Database.Database {
 
 // Additive migrations for databases created before a column existed.
 function migrate(db: Database.Database): void {
-  const cols = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
-  if (!cols.some((c) => c.name === "enabled")) {
+  const ucols = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+  if (!ucols.some((c) => c.name === "enabled")) {
     db.exec("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1");
+  }
+  const acols = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
+  if (!acols.some((c) => c.name === "bifrost_vk_id")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN bifrost_vk_id TEXT");
   }
 }
 
@@ -473,6 +479,7 @@ export function createAccount(
     host_id: hostId,
     status: "pending",
     last_job_id: null,
+    bifrost_vk_id: null,
   };
 }
 
@@ -487,6 +494,14 @@ export function setAccountStatus(
     lastJobId ?? null,
     accountId,
   );
+}
+
+export function setAccountVkId(
+  db: Database.Database,
+  accountId: number,
+  vkId: string | null,
+): void {
+  db.prepare("UPDATE accounts SET bifrost_vk_id = ? WHERE id = ?").run(vkId, accountId);
 }
 
 export function getAccountByUserHost(

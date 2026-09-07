@@ -27,7 +27,9 @@ import {
   requireAuth,
 } from "./auth";
 import {
+  deactivateUserAccess,
   provisionStandardAccount,
+  syncSharedPassword,
   syncSnikketPassword,
   type ProvisionResult,
 } from "./provision";
@@ -238,7 +240,9 @@ api.post("/users/:id/disable", requireAuth, requireAdmin, async (req, res) => {
   setUserEnabled(db, id, false);
 
   // Keep the Snikket account (identity/affiliation) but neutralize it by
-  // randomizing its password. The random value is never shown or stored.
+  // randomizing its password, and cut the user's Hermes agent off: deactivate
+  // its Bifrost key and stop its gateway. The random value is never shown or
+  // stored.
   let provisioning: unknown = null;
   const account = getAccountForUser(db, id);
   if (account) {
@@ -253,6 +257,17 @@ api.post("/users/:id/disable", requireAuth, requireAdmin, async (req, res) => {
       provisioning = {
         ok: false,
         message: err instanceof Error ? err.message : "failed to randomize snikket password",
+      };
+    }
+    try {
+      await deactivateUserAccess({
+        user: { id: target.id, username: target.username },
+        createdBy: currentUserId(res) ?? null,
+      });
+    } catch (err) {
+      provisioning = {
+        ok: false,
+        message: err instanceof Error ? err.message : "failed to stop hermes / deactivate llm key",
       };
     }
   }
@@ -360,8 +375,10 @@ api.post("/users/:id/provision", requireAuth, requireAdmin, async (req, res) => 
   }
 });
 
-// Reset password: rotates the shared password and re-syncs Snikket so the web
-// and XMPP credentials stay identical.
+// Reset password: rotates the shared password and re-syncs Snikket + the
+// Hermes XMPP credential so the web and XMPP passwords stay identical. The
+// Hermes LLM key is preserved (reset-password is a credential reset, not a
+// re-provision).
 api.post("/users/:id/reset-password", requireAuth, requireAdmin, async (req, res) => {
   const id = parseId(req.params.id);
   if (id == null) {
@@ -386,7 +403,7 @@ api.post("/users/:id/reset-password", requireAuth, requireAdmin, async (req, res
   const account = getAccountForUser(db, id);
   if (account) {
     try {
-      const result = await syncSnikketPassword({
+      const result = await syncSharedPassword({
         user: { id: target.id, username: target.username },
         password,
         createdBy: currentUserId(res) ?? null,
@@ -395,7 +412,7 @@ api.post("/users/:id/reset-password", requireAuth, requireAdmin, async (req, res
     } catch (err) {
       provisioning = {
         ok: false,
-        message: err instanceof Error ? err.message : "snikket password sync failed",
+        message: err instanceof Error ? err.message : "shared password sync failed",
       };
     }
   }
