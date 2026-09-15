@@ -29,7 +29,10 @@ export const BIFROST_PROVIDERS = (
 // pointed at (Hermes model.base_url needs the /v1 suffix).
 export const HERMES_LLM_BASE_URL =
   process.env.HERMES_LLM_BASE_URL ?? "https://llm.ironbeard.com/v1";
-export const HERMES_MODEL = process.env.HERMES_MODEL ?? "deepseek-v4-flash";
+// Bifrost model alias (not an upstream model id). The gateway's `deepseek`
+// provider key maps alias `flash` -> the upstream `deepseek-flash` model, so
+// `deepseek/flash` stays stable across upstream model swaps.
+export const HERMES_MODEL = process.env.HERMES_MODEL ?? "deepseek/flash";
 
 // XMPP domain agents bridge into (their Snikket account lives on this domain).
 export const XMPP_DOMAIN = process.env.XMPP_DOMAIN ?? "chat.ironbeard.com";
