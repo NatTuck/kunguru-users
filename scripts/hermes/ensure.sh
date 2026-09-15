@@ -55,6 +55,7 @@ run_as_user() {
 
 if [[ "$action" == "stop" ]]; then
   echo "[ok] stopping hermes gateway for ${USERNAME}"
+  run_as_user 'systemctl --user disable --now hermes-xmpp-watchdog.timer >/dev/null 2>&1 || true'
   run_as_user 'systemctl --user disable --now hermes-gateway >/dev/null 2>&1 || systemctl --user stop hermes-gateway >/dev/null 2>&1 || true'
   exit 0
 fi
@@ -152,11 +153,104 @@ else
     >/dev/null 2>&1 || run_as_user 'systemctl --user enable --now hermes-gateway' >/dev/null
 fi
 
+# Boot persistence is a hard requirement and linger alone does not provide it:
+# a manual start (or `hermes gateway install`) can leave the unit active but
+# DISABLED, and the restart branch above would never repair that. Always enable.
+run_as_user 'systemctl --user enable hermes-gateway' >/dev/null 2>&1 || true
+
+# --- XMPP reconnect-loop watchdog (user timer) ---
+# After an established XMPP session drops, the plugin's in-process reconnect can
+# wedge: it authenticates, then the resource-bind IQ never gets a usable reply,
+# and the gateway retries every ~10s forever. Only a fresh gateway process
+# recovers, so install a small user timer that detects the loop and restarts the
+# unit. The script is embedded because the transport ships a single script over
+# stdin (`sudo bash -s`); a sibling file would not exist on the target.
+install -d "${home}/.hermes/bin" "${home}/.config/systemd/user"
+cat > "${home}/.hermes/bin/hermes-xmpp-watchdog.sh" <<'WATCHDOG'
+#!/usr/bin/env bash
+# Restart the Hermes gateway when its XMPP adapter is stuck in a reconnect
+# loop. Known failure mode: after an established session drops, the plugin's
+# in-process reconnect authenticates but never completes resource binding, so
+# slixmpp logs a bind IqTimeout and the gateway logs "xmpp_connection_lost"
+# every ~10s indefinitely. Only a fresh process binds cleanly, so detect the
+# loop and let systemd restart the unit.
+#
+# Installed and enabled as a user timer by scripts/hermes/ensure.sh.
+set -euo pipefail
+
+UNIT="hermes-gateway"
+WINDOW="${HERMES_XMPP_WATCHDOG_WINDOW:-10 min ago}"
+THRESHOLD="${HERMES_XMPP_WATCHDOG_THRESHOLD:-6}"
+COOLDOWN="${HERMES_XMPP_WATCHDOG_COOLDOWN:-600}"
+STATE="${HERMES_HOME:-$HOME/.hermes}/xmpp-watchdog.state"
+
+systemctl --user is-active --quiet "$UNIT" || exit 0
+
+now=$(date +%s)
+last=0
+if [[ -f "$STATE" ]]; then
+  last=$(cat "$STATE" 2>/dev/null || echo 0)
+fi
+[[ "$last" =~ ^[0-9]+$ ]] || last=0
+if (( now - last < COOLDOWN )); then
+  exit 0
+fi
+
+count=$(journalctl --user -u "$UNIT" --since "$WINDOW" --no-pager 2>/dev/null \
+  | grep -cE "xmpp_connection_lost|xmpp_connect_timeout|IqTimeout:.*<bind" || true)
+
+if (( count >= THRESHOLD )); then
+  echo "hermes-xmpp-watchdog: ${count} XMPP reconnect failures in the last '${WINDOW}'; restarting ${UNIT}"
+  printf '%s\n' "$now" > "$STATE"
+  systemctl --user restart "$UNIT"
+fi
+WATCHDOG
+
+cat > "${home}/.config/systemd/user/hermes-xmpp-watchdog.service" <<'UNIT'
+[Unit]
+Description=Restart the Hermes gateway when its XMPP adapter is stuck in a reconnect loop
+
+[Service]
+Type=oneshot
+ExecStart=%h/.hermes/bin/hermes-xmpp-watchdog.sh
+UNIT
+
+cat > "${home}/.config/systemd/user/hermes-xmpp-watchdog.timer" <<'UNIT'
+[Unit]
+Description=Periodically check the Hermes XMPP adapter for a reconnect loop
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=hermes-xmpp-watchdog.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+chown "${USERNAME}" \
+  "${home}/.hermes/bin/hermes-xmpp-watchdog.sh" \
+  "${home}/.config/systemd/user/hermes-xmpp-watchdog.service" \
+  "${home}/.config/systemd/user/hermes-xmpp-watchdog.timer"
+chmod 0755 "${home}/.hermes/bin/hermes-xmpp-watchdog.sh"
+run_as_user 'systemctl --user daemon-reload'
+run_as_user 'systemctl --user enable --now hermes-xmpp-watchdog.timer' >/dev/null 2>&1 || true
+
 sleep 3
+if run_as_user 'systemctl --user is-enabled hermes-gateway' >/dev/null 2>&1; then
+  echo "[ok] hermes gateway enabled for ${USERNAME}"
+else
+  echo "warning: hermes gateway for ${USERNAME} is not enabled at boot; run 'systemctl --user enable hermes-gateway'" >&2
+fi
 if run_as_user 'systemctl --user is-active hermes-gateway' >/dev/null 2>&1; then
   echo "[ok] hermes gateway active for ${USERNAME}"
 else
   echo "warning: hermes gateway for ${USERNAME} not active after start; check 'journalctl --user -u hermes-gateway'" >&2
+fi
+if run_as_user 'systemctl --user is-active hermes-xmpp-watchdog.timer' >/dev/null 2>&1; then
+  echo "[ok] xmpp watchdog timer active for ${USERNAME}"
+else
+  echo "warning: xmpp watchdog timer not active for ${USERNAME}" >&2
 fi
 
 echo "[ok] ensure-hermes complete for ${USERNAME}"
