@@ -87,6 +87,21 @@ svc_reload_if_any() {
 # ping_ok HOST: succeeds when the host answers a single ping.
 ping_ok() { ping -c1 -W2 "$1" >/dev/null 2>&1; }
 
+# hosts_ensure IP NAME [ALIAS...]: idempotently map NAME/aliases to IP in
+# /etc/hosts (used so VPN peers resolve each other by name in both directions).
+hosts_ensure() {
+  local ip="$1"; shift
+  [[ -n "$ip" && $# -gt 0 ]] || return 0
+  local name
+  for name in "$@"; do
+    if grep -qE "^[0-9a-fA-F:.]+[[:space:]]+[^#]*\b${name}\b" /etc/hosts 2>/dev/null; then
+      return 0
+    fi
+  done
+  printf '%s\t%s\n' "$ip" "$*" >> /etc/hosts
+  log "hosts: ${ip} $*"
+}
+
 # is_domain_pointing_here NAME: true when DNS for NAME resolves to this host.
 is_domain_pointing_here() {
   local name="$1" want_ip="${2:-}"

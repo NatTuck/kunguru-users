@@ -26,6 +26,12 @@ WG_IFACE="wg0"
 WG_HUB_IP="10.0.0.1"
 WG_SUBNET="10.0.0.0/24"
 WG_PORT="51820"
+# Public interface on the hub to NAT peer egress (needed when peers route all
+# traffic through the hub). Leave empty when peers only reach the WG subnet.
+WG_NAT_IFACE=""
+# Whether role=peer hosts use the hub as their default gateway (1) or only
+# route the WG subnet (0).
+WG_PEER_DEFAULT_GATEWAY="0"
 
 # --- Snikket ---
 SNIKKET_HOST="otter.ferrus.net"
@@ -56,10 +62,13 @@ BIFROST_CORS_ORIGINS="https://*.ironbeard.com"
 # --- Host roles ---
 # role `hub`     : WireGuard hub + nginx + Snikket + Bifrost public machine.
 # role `lanpeer` : reachable from the hub over the existing peer LAN; no local wg.
-# role `peer`    : (future) host with its own wg interface dialing the hub.
+# role `peer`    : has its own wg interface dialing the hub (the wireguard-peers
+#                  step generates its key, writes its config, and adds it to the
+#                  hub; both hosts get /etc/hosts entries).
 declare -A HOST_ROLES=(
   ["otter.ferrus.net"]="hub"
   ["goose.ferrus.net"]="lanpeer"
+  # ["swan.ferrus.net"]="peer"
 )
 
 # ssh address per host: use whatever works from the controller's ~/.ssh/config

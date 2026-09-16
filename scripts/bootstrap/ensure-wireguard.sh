@@ -38,12 +38,17 @@ if [[ ! -f "$conf" ]] && ! ip link show "${WG_IFACE}" >/dev/null 2>&1; then
   chmod 0600 /etc/wireguard/privatekey
   wg pubkey </etc/wireguard/privatekey >/etc/wireguard/publickey
   iface_cfg="$(mktemp)"
-  cat >"${iface_cfg}" <<EOF
-[Interface]
-Address = ${want_addr}
-ListenPort = ${WG_PORT}
-PrivateKey = $(cat /etc/wireguard/privatekey)
-EOF
+  {
+    printf '[Interface]\n'
+    printf 'Address = %s\n' "${want_addr}"
+    printf 'ListenPort = %s\n' "${WG_PORT}"
+    printf 'PrivateKey = %s\n' "$(cat /etc/wireguard/privatekey)"
+    if [[ -n "${WG_NAT_IFACE:-}" ]]; then
+      # Peers that use the hub as their default gateway need NAT on the hub.
+      printf 'PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -A FORWARD -i %%i -j ACCEPT; iptables -A FORWARD -o %%i -j ACCEPT; iptables -t nat -A POSTROUTING -s %s -o %s -j MASQUERADE\n' "${WG_SUBNET}" "${WG_NAT_IFACE}"
+      printf 'PostDown = iptables -D FORWARD -i %%i -j ACCEPT; iptables -D FORWARD -o %%i -j ACCEPT; iptables -t nat -D POSTROUTING -s %s -o %s -j MASQUERADE\n' "${WG_SUBNET}" "${WG_NAT_IFACE}"
+    fi
+  } >"${iface_cfg}"
   install -m 0600 -o root -g root "${iface_cfg}" "${conf}"
   rm -f "${iface_cfg}"
   log "wrote new hub config ${conf}"
@@ -86,5 +91,39 @@ for ip in ${REACH_HOSTS:-}; do
   fi
 done
 (( ok )) || fail "one or more hub reachability checks failed"
+
+# Add/adopt peers (WG_PEERS: whitespace-separated name=pubkey=ip). Peers that
+# dial the hub and use it as their default gateway need the hub's NAT PostUp
+# (WG_NAT_IFACE) to reach the internet.
+for spec in ${WG_PEERS:-}; do
+  pname="${spec%%=*}"
+  rest="${spec#*=}"
+  ppub="${rest%%=*}"
+  pip="${rest#*=}"
+  if [[ -z "$pname" || -z "$ppub" || -z "$pip" ]]; then
+    warn "skipping malformed WG_PEERS entry: ${spec}"
+    continue
+  fi
+  if grep -qF "$ppub" "$conf" 2>/dev/null; then
+    log "peer ${pname} already present"
+    continue
+  fi
+  {
+    printf '\n[Peer]\n# %s\n' "$pname"
+    printf 'PublicKey = %s\n' "$ppub"
+    printf 'AllowedIPs = %s/32\n' "$pip"
+  } >>"$conf"
+  log "added peer ${pname} (${pip})"
+done
+if [[ -n "${WG_PEERS:-}" ]] && ip link show "${WG_IFACE}" >/dev/null 2>&1; then
+  wg syncconf "${WG_IFACE}" <(wg-quick strip "${WG_IFACE}") 2>/dev/null || \
+    svc_reload_if_any "wg-quick@${WG_IFACE}"
+fi
+
+# Register the group's WG hostnames in /etc/hosts so hub and peers resolve each
+# other by name in both directions. WG_HOSTS: whitespace-separated name=ip.
+for kv in ${WG_HOSTS:-}; do
+  hosts_ensure "${kv#*=}" "${kv%%=*}"
+done
 
 log "ensure-wireguard complete on ${HOSTNAME_BOOTSTRAP}"

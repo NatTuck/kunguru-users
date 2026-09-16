@@ -112,6 +112,14 @@ apply_step_ssh_access() {
   done
 }
 
+# WG_HOSTS: name=ip for every group host, used for /etc/hosts on hub + peers.
+build_wg_hosts() {
+  local out="" h
+  for h in "${!HOST_PEER_IP[@]}"; do out+="${h}=${HOST_PEER_IP[$h]} "; done
+  [[ -n "$HUB" ]] && out+="${HUB}=${WG_HUB_IP} "
+  echo "$out"
+}
+
 apply_step_wireguard() {
   local reach=() h
   for h in "${!HOST_PEER_IP[@]}"; do reach+=("${HOST_PEER_IP[$h]}"); done
@@ -120,7 +128,46 @@ apply_step_wireguard() {
     HOSTNAME_BOOTSTRAP="$HUB" \
     WG_IFACE="$WG_IFACE" WG_HUB_IP="$WG_HUB_IP" \
     WG_SUBNET="$WG_SUBNET" WG_PORT="$WG_PORT" \
-    REACH_HOSTS="${reach[*]}"
+    REACH_HOSTS="${reach[*]}" \
+    WG_HOSTS="$(build_wg_hosts)" \
+    WG_NAT_IFACE="${WG_NAT_IFACE:-}"
+}
+
+# Bring up hosts with role=peer (they dial the hub), then add them as peers on
+# the hub. Key exchange: each peer generates its key and prints the public key.
+apply_step_wireguard_peers() {
+  local peers=() h
+  for h in "${!HOST_ROLES[@]}"; do
+    [[ "${HOST_ROLES[$h]}" == "peer" ]] && peers+=("$h")
+  done
+  ((${#peers[@]})) || { log "no peer-role hosts"; return 0; }
+
+  local hubpub
+  hubpub="$(ssh -o BatchMode=yes -o ConnectTimeout=10 \
+    "${BOOTSTRAP_SSH_USER}@$(ssh_addr "$HUB")" \
+    "sudo -n wg show ${WG_IFACE} public-key" 2>/dev/null)"
+  [[ -n "$hubpub" ]] || fail "could not read hub ${WG_IFACE} public key"
+
+  local specs=() out pub
+  for h in "${peers[@]}"; do
+    step "wireguard peer: $h"
+    out="$(run_remote "$BOOTSTRAP_SSH_USER" "$(ssh_addr "$h")" ensure-wireguard-peer.sh \
+      WG_IFACE="$WG_IFACE" WG_PEER_IP="${HOST_PEER_IP[$h]}" WG_SUBNET="$WG_SUBNET" \
+      WG_HUB_PUBKEY="$hubpub" WG_HUB_ENDPOINT="${PUBLIC_IP}:${WG_PORT}" \
+      WG_PEER_DEFAULT_GATEWAY="${WG_PEER_DEFAULT_GATEWAY:-0}" \
+      WG_HOSTS="$(build_wg_hosts)" 2>&1)"
+    printf '%s\n' "$out"
+    pub="$(printf '%s\n' "$out" | sed -n 's/.*peer public key: //p' | tail -1)"
+    [[ -n "$pub" ]] || fail "could not read peer public key for $h"
+    specs+=("${h}=${pub}=${HOST_PEER_IP[$h]}")
+  done
+
+  step "wireguard (hub ${HUB}) add peers"
+  run_remote "$BOOTSTRAP_SSH_USER" "$(ssh_addr "$HUB")" ensure-wireguard.sh \
+    HOSTNAME_BOOTSTRAP="$HUB" WG_IFACE="$WG_IFACE" WG_HUB_IP="$WG_HUB_IP" \
+    WG_SUBNET="$WG_SUBNET" WG_PORT="$WG_PORT" \
+    WG_HOSTS="$(build_wg_hosts)" WG_NAT_IFACE="${WG_NAT_IFACE:-}" \
+    WG_PEERS="${specs[*]}"
 }
 
 apply_step_snikket() {
@@ -171,7 +218,11 @@ EOF
 
 do_apply() {
   [[ -z "$ONLY" || "$ONLY" == "ssh-access" ]] && apply_step_ssh_access
-  [[ -z "$ONLY" || "$ONLY" == "wireguard" ]] && apply_step_wireguard
+  if [[ -z "$ONLY" || "$ONLY" == "wireguard" ]]; then
+    apply_step_wireguard
+    apply_step_wireguard_peers
+  fi
+  [[ "$ONLY" == "wireguard-peers" ]] && apply_step_wireguard_peers
   if [[ -z "$ONLY" || "$ONLY" == "snikket" ]]; then apply_step_snikket; fi
   if [[ -z "$ONLY" || "$ONLY" == "bifrost" ]]; then apply_step_bifrost; fi
   if [[ -z "$ONLY" || "$ONLY" == "nginx" ]]; then apply_step_nginx; fi
