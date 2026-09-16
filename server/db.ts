@@ -270,6 +270,28 @@ export function listUsersWithAccounts(db: Database.Database): AccountJoinRow[] {
     .all() as AccountJoinRow[];
 }
 
+export interface SiteUserRow {
+  id: number;
+  username: string;
+  ssh_target: string;
+}
+
+// Enabled users with an enabled host account: the set that gets per-user site
+// routes (Hermes WebUI, private app, public site). Disabled users are omitted,
+// so their reverse proxies are dropped on the next reconcile.
+export function listSiteUsers(db: Database.Database): SiteUserRow[] {
+  return db
+    .prepare(
+      `SELECT u.id AS id, u.username AS username, h.ssh_target AS ssh_target
+       FROM users u
+       JOIN accounts a ON a.user_id = u.id
+       JOIN hosts h ON h.id = a.host_id
+       WHERE u.enabled = 1 AND h.enabled = 1
+       ORDER BY u.id ASC`,
+    )
+    .all() as SiteUserRow[];
+}
+
 export function toAdminRows(rows: AccountJoinRow[]): AdminUserRow[] {
   return rows.map((r) => ({
     id: r.id,

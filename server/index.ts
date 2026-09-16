@@ -3,6 +3,8 @@ import cookieParser from "cookie-parser";
 import ViteExpress from "vite-express";
 import { ensureAdminSeed, ensureHostSeed, getDb, ADMIN_USERNAME } from "./db";
 import { hostSeeds } from "./inventory";
+import { resolveSession } from "./auth";
+import { privateUsernameFromHost } from "./sites";
 import { api } from "./routes";
 
 const app = express();
@@ -12,6 +14,40 @@ app.use(cookieParser());
 
 app.get("/api/ping", (_req, res) => {
   res.json({ ok: true, ts: Date.now() });
+});
+
+// nginx `auth_request` target for the private per-user site hosts. Runs on
+// loopback (the gateway's nginx) only; validates the app session and asserts
+// the requested private host (`<user>.users.<base>` / `<user>-hermes.users.<base>`)
+// resolves to the session user. Returns 200 + X-Auth-User (which nginx forwards
+// as the trusted Remote-User header) or 401/403 — never a redirect.
+function isLoopback(addr: string | undefined): boolean {
+  if (!addr) return false;
+  const a = addr.startsWith("::ffff:") ? addr.slice(7) : addr;
+  return a === "::1" || a === "127.0.0.1" || a.startsWith("127.");
+}
+
+app.get("/internal/auth", (req, res) => {
+  if (!isLoopback(req.socket.remoteAddress)) {
+    res.status(403).end();
+    return;
+  }
+  // Read-only check (no global sweep); sliding expiry is throttled internally.
+  const ctx = resolveSession(req, { sweep: false, touch: true });
+  if (!ctx) {
+    res.status(401).end();
+    return;
+  }
+  const originalHost =
+    (req.headers["x-original-host"] as string | undefined) ?? req.headers.host;
+  const tenant = privateUsernameFromHost(originalHost);
+  if (!tenant || tenant !== ctx.user.username) {
+    res.status(403).end();
+    return;
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Auth-User", ctx.user.username);
+  res.status(200).end();
 });
 
 app.use("/api", api);

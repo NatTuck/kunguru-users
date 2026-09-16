@@ -32,8 +32,22 @@ import {
   syncSnikketPassword,
   type ProvisionResult,
 } from "./provision";
+import { isProvisionableUsername } from "./sites";
+import { reconcileUserSites } from "./nginx";
 
 export const api = Router();
+
+// Per-user site routes (Hermes WebUI / private app / public site) are derived
+// from DB state, so reconcile them after any change to the user set. Failures
+// are surfaced, never fatal to the user operation itself.
+async function reconcileSitesSafe(): Promise<{ ok: boolean; output: string }> {
+  try {
+    const r = await reconcileUserSites();
+    return { ok: r.ok, output: r.output };
+  } catch (err) {
+    return { ok: false, output: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 const ROLES: Role[] = ["admin", "user"];
 
@@ -41,9 +55,10 @@ function isRole(value: unknown): value is Role {
   return typeof value === "string" && (ROLES as string[]).includes(value);
 }
 
-// Linux/XMPP-friendly usernames (provisioned onto hosts / into Snikket).
+// Usernames are Linux accounts, Snikket JIDs, and DNS labels for the per-user
+// site hostnames (see server/sites.ts).
 function isValidUsername(value: unknown): value is string {
-  return typeof value === "string" && /^[a-z][a-z0-9._-]{0,31}$/.test(value);
+  return isProvisionableUsername(value);
 }
 
 function parseId(raw: unknown): number | null {
@@ -101,7 +116,7 @@ api.post("/users", requireAuth, requireAdmin, async (req, res) => {
   if (!isValidUsername(username)) {
     res.status(400).json({
       error:
-        "invalid username: lowercase letters/digits/._- , starting with a letter (max 32)",
+        "invalid username: lowercase letters/digits/hyphens, starting with a letter, not ending in '-hermes', max 32 (must be a DNS label)",
     });
     return;
   }
@@ -152,10 +167,12 @@ api.post("/users", requireAuth, requireAdmin, async (req, res) => {
         password,
         createdBy: currentUserId(res) ?? null,
       });
+      const sites = await reconcileSitesSafe();
       res.status(201).json({
         user,
         password,
         provisioning: toProvisionView(result),
+        sites,
       });
       return;
     } catch (err) {
@@ -271,9 +288,12 @@ api.post("/users/:id/disable", requireAuth, requireAdmin, async (req, res) => {
     }
   }
 
+  const sites = await reconcileSitesSafe();
+
   res.json({
     user: { id: target.id, username: target.username, role: target.role, enabled: 0 },
     provisioning,
+    sites,
   });
 });
 
@@ -319,10 +339,13 @@ api.post("/users/:id/enable", requireAuth, requireAdmin, async (req, res) => {
     }
   }
 
+  const sites = await reconcileSitesSafe();
+
   res.json({
     user: { id: target.id, username: target.username, role: target.role, enabled: 1 },
     password,
     provisioning,
+    sites,
   });
 });
 
@@ -365,7 +388,13 @@ api.post("/users/:id/provision", requireAuth, requireAdmin, async (req, res) => 
       password,
       createdBy: currentUserId(res) ?? null,
     });
-    res.json({ user: { id: target.id, username: target.username }, password, provisioning: toProvisionView(result) });
+    const sites = await reconcileSitesSafe();
+    res.json({
+      user: { id: target.id, username: target.username },
+      password,
+      provisioning: toProvisionView(result),
+      sites,
+    });
   } catch (err) {
     res.status(500).json({
       error: err instanceof Error ? err.message : "provisioning failed",

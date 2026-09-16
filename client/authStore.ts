@@ -8,7 +8,7 @@ interface AuthState {
   loginError: string | null;
   loggingIn: boolean;
   initialize: () => Promise<void>;
-  login: (username: string, password: string) => Promise<boolean>;
+  login: (username: string, password: string, next?: string) => Promise<boolean>;
   logout: () => Promise<void>;
 }
 
@@ -31,13 +31,19 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  login: async (username, password) => {
+  login: async (username, password, next) => {
     set({ loggingIn: true, loginError: null });
     try {
-      const data = await post<{ user: User }>("/api/auth/login", {
-        username,
-        password,
-      });
+      const data = await post<{ user: User; redirectTo?: string | null }>(
+        "/api/auth/login",
+        { username, password, next },
+      );
+      if (data.redirectTo) {
+        // Validated server-side (same-origin path or a per-tenant WebUI host).
+        // Full navigation, so the GuestOnly guard can't bounce us to "/" first.
+        window.location.replace(data.redirectTo);
+        return true;
+      }
       set({ user: data.user, loggingIn: false });
       return true;
     } catch (err) {

@@ -13,7 +13,8 @@ export default function Login() {
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    await login(username, password);
+    const next = new URLSearchParams(window.location.search).get("next") ?? undefined;
+    await login(username, password, next);
   };
 
   return (

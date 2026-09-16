@@ -13,7 +13,8 @@
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit",
     "reset-admin-pw": "tsx server/reset-admin-pw.ts",
-    "bifrost-cleanup-keys": "tsx server/bifrost-cleanup-keys.ts"
+    "bifrost-cleanup-keys": "tsx server/bifrost-cleanup-keys.ts",
+    "sites-reconcile": "tsx server/sites-reconcile.ts"
   },
   "dependencies": {
     "@heroui/react": "^3.2.4",

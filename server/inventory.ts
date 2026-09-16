@@ -18,6 +18,40 @@ export const SCRIPTS_DIR =
 export const SNIKKET_HOST_NAME =
   process.env.KUNGURU_SNIKKET_HOST ?? "otter.ferrus.net";
 
+// Public DNS base for per-user service hostnames (e.g. `ironbeard.com`). Empty
+// disables per-user site routing (dev).
+export const BASE_DOMAIN = (process.env.KUNGURU_BASE_DOMAIN ?? "")
+  .trim()
+  .toLowerCase();
+
+// Private (authenticated) subtree: `<user>.users.<base>` and
+// `<user>-hermes.users.<base>`. Also the default session-cookie domain.
+export const PRIVATE_DOMAIN = BASE_DOMAIN ? `users.${BASE_DOMAIN}` : "";
+
+// Session cookie Domain. Defaults to the private subtree so the browser also
+// sends the session to `<user>.users.<base>`; an explicit override wins; empty
+// leaves the cookie host-only (dev).
+export const COOKIE_DOMAIN =
+  (process.env.KUNGURU_COOKIE_DOMAIN ?? "").trim().toLowerCase() || PRIVATE_DOMAIN;
+
+// Host that runs nginx; per-user site routes are rendered there.
+export const GATEWAY_HOST_NAME =
+  process.env.KUNGURU_GATEWAY_HOST ?? SNIKKET_HOST_NAME;
+
+// Source address the gateway's nginx presents to a user host over the VPN. The
+// per-user WebUI trusts only this proxy (plus loopback) for the Remote-User
+// header, so it must match the gateway's VPN IP.
+export const GATEWAY_WG_IP = process.env.KUNGURU_GATEWAY_WG_IP ?? "10.0.0.1";
+
+// ACME contact + certificate name for the single combined per-user sites cert.
+export const ACME_EMAIL = process.env.KUNGURU_ACME_EMAIL ?? "";
+export const SITES_CERT_NAME = process.env.KUNGURU_SITES_CERT ?? "kunguru-sites";
+
+// Deterministic per-user service ports (`base + users.id`).
+export const PORT_HERMES_WEBUI = 11000;
+export const PORT_PUBLIC_SITE = 12000;
+export const PORT_PRIVATE_APP = 13000;
+
 function envKey(name: string): string {
   return `KUNGURU_SSH_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
 }
