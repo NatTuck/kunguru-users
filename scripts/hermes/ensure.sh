@@ -81,6 +81,14 @@ if [[ ! -x "${venv_py}" ]]; then
   exit 1
 fi
 
+# --- optional: bring hermes-agent to the latest upstream ---
+# Heavy (git pull + dependency reinstall + service restart), so only when asked:
+# HERMES_UPDATE=1 or HERMES_ACTION=update.
+if [[ "${HERMES_UPDATE:-0}" == "1" || "$action" == "update" ]]; then
+  echo "[changed] updating hermes-agent for ${USERNAME}"
+  run_as_user 'hermes update --yes' || echo "warning: 'hermes update' failed; continuing" >&2
+fi
+
 # --- model / provider config (LLM gateway) ---
 if [[ -n "${HERMES_LLM_BASE_URL:-}" ]]; then
   run_as_user "hermes config set model.provider custom >/dev/null && hermes config set model.base_url '${HERMES_LLM_BASE_URL}' >/dev/null"
@@ -131,16 +139,32 @@ with open(env_path, 'w') as f:
 os.chmod(env_path, 0o600)
 PY"
   rm -f "${stage}"
+fi
 
-  plugin_dir="${home}/.hermes/plugins/hermes-xmpp-plugin"
-  if [[ ! -d "${plugin_dir}" ]]; then
-    echo "[changed] installing hermes-xmpp-plugin for ${USERNAME}"
-    mkdir -p "${home}/.hermes/plugins"
-    chown "${USERNAME}" "${home}/.hermes/plugins"
-    run_as_user "git clone --depth 1 https://github.com/fastfinge/hermes-xmpp-plugin.git '${plugin_dir}'"
-  fi
-  run_as_user "'${home}/.hermes/bin/uv' pip install --quiet --python '${venv_py}' -r '${plugin_dir}/requirements.txt'"
-  run_as_user 'hermes config set plugins.enabled '"'"'["hermes-xmpp-plugin"]'"'"' >/dev/null'
+# --- XMPP plugin: install/update + deps (incl. OMEMO) + enable ---
+# Not gated on XMPP creds, so a plain `ensure`/`update` also refreshes the
+# plugin. We update via git rather than `hermes plugins update`, whose security
+# scanner auto-disables this community plugin on a "dangerous" verdict.
+plugin_dir="${home}/.hermes/plugins/hermes-xmpp-plugin"
+if [[ ! -d "${plugin_dir}/.git" ]]; then
+  echo "[changed] installing hermes-xmpp-plugin for ${USERNAME}"
+  mkdir -p "${home}/.hermes/plugins"
+  chown "${USERNAME}" "${home}/.hermes/plugins"
+  run_as_user "git clone --depth 1 https://github.com/fastfinge/hermes-xmpp-plugin.git '${plugin_dir}'"
+else
+  # Shallow clones can't fast-forward when upstream rewrites history, so fetch
+  # the branch tip and hard-reset.
+  run_as_user "git -C '${plugin_dir}' fetch --depth 1 origin main >/dev/null 2>&1 && git -C '${plugin_dir}' reset --hard FETCH_HEAD >/dev/null 2>&1 || true"
+fi
+# Plugin deps, including the optional OMEMO end-to-end encryption stack
+# (slixmpp-omemo/omemo); harmless if already present.
+run_as_user "'${home}/.hermes/bin/uv' pip install --quiet --python '${venv_py}' -r '${plugin_dir}/requirements.txt' slixmpp-omemo omemo"
+run_as_user 'hermes config set plugins.enabled '"'"'["hermes-xmpp-plugin"]'"'"' >/dev/null'
+
+# --- enable OMEMO whenever the XMPP platform is configured ---
+# (The plugin defaults omemo_enabled=true, but pin it explicitly.)
+if [[ -f "${home}/.hermes/.env" ]] && ! grep -q '^XMPP_OMEMO_ENABLED=' "${home}/.hermes/.env" 2>/dev/null; then
+  run_as_user "printf '%s\n' XMPP_OMEMO_ENABLED=true >> '${home}/.hermes/.env'"
 fi
 
 # --- gateway service: ensure running, restart to apply config/env ---

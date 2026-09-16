@@ -18,7 +18,14 @@ import {
   type JobStatus,
   type User,
 } from "./db";
-import { SCRIPTS_DIR, SNIKKET_HOST_NAME, SSH_USER } from "./inventory";
+import {
+  GATEWAY_WG_IP,
+  PORT_HERMES_WEBUI,
+  PRIVATE_DOMAIN,
+  SCRIPTS_DIR,
+  SNIKKET_HOST_NAME,
+  SSH_USER,
+} from "./inventory";
 import {
   createVirtualKey,
   deleteVirtualKey,
@@ -58,6 +65,7 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
     { name: "snikket-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
     { name: "snikket-agent-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
+    { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
   ],
   [PASSWORD_SYNC_PROFILE]: [
     { name: "snikket-password", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
@@ -146,13 +154,29 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
           env.XMPP_HOST = XMPP_DOMAIN;
         }
       }
+      if (s.def.name === "webui") {
+        // Per-user WebUI on `<user>-hermes.users.<base>`: bound to the address
+        // the gateway's nginx reaches (loopback when co-located), trusting only
+        // the gateway as a proxy for the Remote-User header.
+        const coLocated = s.host.ssh_target === "localhost";
+        env.WEBUI_PORT = String(PORT_HERMES_WEBUI + user.id);
+        env.WEBUI_HOST = coLocated ? "127.0.0.1" : s.host.ssh_target;
+        env.WEBUI_TRUSTED_PROXIES = coLocated ? "127.0.0.1/32" : `${GATEWAY_WG_IP}/32`;
+        if (PRIVATE_DOMAIN) env.WEBUI_LOGOUT_URL = `https://${PRIVATE_DOMAIN}/`;
+      }
       const res = await runRemote({
         sshUser: SSH_USER,
         sshTarget: s.host.ssh_target,
         script,
         env,
-        // hermes install/config pulls a python stack + browser the first time.
-        timeoutMs: s.def.name === "hermes" ? 900_000 : 120_000,
+        // hermes install/config pulls a python stack + browser the first time;
+        // the webui step clones the WebUI repo on first run.
+        timeoutMs:
+          s.def.name === "hermes"
+            ? 900_000
+            : s.def.name === "webui"
+              ? 600_000
+              : 120_000,
       });
       exitCode = res.exitCode ?? 1;
       output = res.output;

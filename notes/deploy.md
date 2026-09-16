@@ -107,3 +107,28 @@ systemctl --user restart kunguru-users
 ```
 
 Database lives in `<checkout>/data/` (gitignored) and is preserved across pulls.
+
+## Upgrading tenant agents (Hermes / XMPP plugin / WebUI)
+
+`scripts/hermes/ensure.sh` converges each tenant's Hermes install, and
+`scripts/webui/ensure.sh` converges the WebUI. A plain `ensure` keeps the XMPP
+plugin and the WebUI current (git fetch + hard-reset, since they're shallow
+clones) and installs the optional OMEMO stack (`slixmpp-omemo`/`omemo`), but it
+does **not** touch the Hermes agent version.
+
+To move the agent itself to the latest upstream (heavy: git pull + dependency
+reinstall + gateway restart), run the hermes step with `HERMES_UPDATE=1` (or
+`HERMES_ACTION=update`):
+
+```sh
+# on the tenant's host, as the app user (or via the app's transport)
+sudo env USERNAME=alice HERMES_UPDATE=1 bash -s < scripts/hermes/ensure.sh
+```
+
+Notes:
+- The new Hermes plugin security scanner flags the community XMPP plugin as a
+  "dangerous" verdict and auto-disables it on `hermes plugins update`. The
+  scripts update it via git and re-assert `plugins.enabled`, bypassing that.
+- OMEMO is enabled via `XMPP_OMEMO_ENABLED=true` in the tenant's
+  `~/.hermes/.env`; the agent publishes its device list on first connect.
+
