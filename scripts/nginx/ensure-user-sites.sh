@@ -24,6 +24,7 @@ routes_json="${KUNGURU_ROUTES:-[]}"
 acme_email="${KUNGURU_ACME_EMAIL:-}"
 cert_name="${KUNGURU_SITES_CERT:-kunguru-sites}"
 auth_target="${KUNGURU_AUTH_TARGET:-127.0.0.1:3030}"
+extra_hosts="${KUNGURU_EXTRA_HOSTS:-}"
 
 base="$KUNGURU_BASE_DOMAIN"
 private="users.${base}"
@@ -41,16 +42,17 @@ mkdir -p "$webroot"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-python3 - "$routes_json" "$base" "$private" "$cert_name" "$auth_target" "$tmp" <<'PY'
+python3 - "$routes_json" "$base" "$private" "$cert_name" "$auth_target" "$tmp" "$extra_hosts" <<'PY'
 import json, os, sys
 routes_json, base, private, cert_name, auth_target, tmp = sys.argv[1:7]
+extra_hosts = sys.argv[7] if len(sys.argv) > 7 else ""
 webroot = "/var/www/certbot"
 cert_dir = "/etc/letsencrypt/live/" + cert_name
 try:
     routes = json.loads(routes_json)
 except json.JSONDecodeError:
     routes = []
-hosts = sorted({r["hostname"] for r in routes if r.get("hostname")})
+hosts = sorted({r["hostname"] for r in routes if r.get("hostname")} | set(extra_hosts.split()))
 
 map_lines = [
     "# Managed by kunguru-users (scripts/nginx/ensure-user-sites.sh).",
@@ -148,8 +150,29 @@ public_server = """server {{
 """.format(base=base, cert_dir=cert_dir)
 
 open(os.path.join(tmp, "sites-http.conf"), "w").write(header + http_server)
+
+# Static aliases: a dedicated vhost per host serving a docroot.
+static_servers = ""
+for r in routes:
+    if r.get("kind") == "static" and r.get("hostname") and r.get("root"):
+        static_servers += """
+server {{
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name {host};
+
+    ssl_certificate     {cert_dir}/fullchain.pem;
+    ssl_certificate_key {cert_dir}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    root {root};
+    index index.html;
+    location / {{ try_files $uri $uri/ =404; }}
+}}
+""".format(host=r["hostname"], root=r["root"], cert_dir=cert_dir)
+
 open(os.path.join(tmp, "sites-full.conf"), "w").write(
-    header + http_server + "\n" + private_server + "\n" + public_server
+    header + http_server + "\n" + private_server + "\n" + public_server + static_servers
 )
 PY
 

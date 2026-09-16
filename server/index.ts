@@ -1,10 +1,10 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import ViteExpress from "vite-express";
-import { ensureAdminSeed, ensureHostSeed, getDb, ADMIN_USERNAME } from "./db";
+import { ensureAdminSeed, ensureHostSeed, getAliasByLabel, getDb, getUserByUsername, ADMIN_USERNAME } from "./db";
 import { hostSeeds } from "./inventory";
 import { resolveSession } from "./auth";
-import { privateUsernameFromHost } from "./sites";
+import { privateLabelFromHost, privateUsernameFromHost } from "./sites";
 import { api } from "./routes";
 
 const app = express();
@@ -40,8 +40,25 @@ app.get("/internal/auth", (req, res) => {
   }
   const originalHost =
     (req.headers["x-original-host"] as string | undefined) ?? req.headers.host;
-  const tenant = privateUsernameFromHost(originalHost);
-  if (!tenant || tenant !== ctx.user.username) {
+  const label = privateLabelFromHost(originalHost);
+  if (!label) {
+    res.status(403).end();
+    return;
+  }
+  // Owner is the username the label maps to, or (for a private alias label) the
+  // alias's user. Both resolve to a user id compared against the session.
+  const db = getDb();
+  let ownerId: number | null = null;
+  const nameOwner = privateUsernameFromHost(originalHost);
+  if (nameOwner) {
+    const u = getUserByUsername(db, nameOwner);
+    if (u) ownerId = u.id;
+  }
+  if (ownerId == null) {
+    const alias = getAliasByLabel(db, label);
+    if (alias && alias.access === "private") ownerId = alias.user_id;
+  }
+  if (ownerId == null || ownerId !== ctx.user.id) {
     res.status(403).end();
     return;
   }

@@ -1,14 +1,19 @@
 import { Router } from "express";
 import {
   countAdmins,
+  createAlias,
   createUser,
+  deleteAlias,
   generatePassword,
   getAccountForUser,
+  getAliasByLabel,
   getDb,
   getHostById,
   getJob,
   getJobSteps,
   getUserById,
+  getUserByUsername,
+  listAliasesForUser,
   listHosts,
   listJobsForUser,
   listUsersWithAccounts,
@@ -16,6 +21,9 @@ import {
   setUserRole,
   toAdminRows,
   updateUserPasswordHash,
+  type AliasAccess,
+  type AliasKind,
+  type AliasService,
   type Role,
 } from "./db";
 import {
@@ -32,7 +40,7 @@ import {
   syncSnikketPassword,
   type ProvisionResult,
 } from "./provision";
-import { isProvisionableUsername } from "./sites";
+import { isProvisionableAliasLabel, isProvisionableUsername } from "./sites";
 import { reconcileUserSites } from "./nginx";
 
 export const api = Router();
@@ -475,4 +483,119 @@ api.get("/jobs/:id", requireAuth, requireAdmin, (req, res) => {
     return;
   }
   res.json({ job, steps: getJobSteps(db, id) });
+});
+
+// --- Per-user site aliases (admin) ---
+
+const ALIAS_KINDS: AliasKind[] = ["proxy", "static"];
+const ALIAS_ACCESS: AliasAccess[] = ["public", "private"];
+const ALIAS_SERVICES: AliasService[] = [
+  "private-app",
+  "public-site",
+  "hermes-webui",
+];
+
+function isAliasKind(v: unknown): v is AliasKind {
+  return typeof v === "string" && (ALIAS_KINDS as string[]).includes(v);
+}
+function isAliasAccess(v: unknown): v is AliasAccess {
+  return typeof v === "string" && (ALIAS_ACCESS as string[]).includes(v);
+}
+function isAliasService(v: unknown): v is AliasService {
+  return typeof v === "string" && (ALIAS_SERVICES as string[]).includes(v);
+}
+
+api.get("/users/:id/aliases", requireAuth, requireAdmin, (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  res.json({ aliases: listAliasesForUser(getDb(), id) });
+});
+
+api.post("/users/:id/aliases", requireAuth, requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const { label, kind, service, root, access } = (req.body ?? {}) as {
+    label?: unknown;
+    kind?: unknown;
+    service?: unknown;
+    root?: unknown;
+    access?: unknown;
+  };
+  if (!isProvisionableAliasLabel(label)) {
+    res.status(400).json({
+      error:
+        "invalid label: lowercase letters/digits/hyphens, starting with a letter, not '-hermes', not reserved",
+    });
+    return;
+  }
+  const db = getDb();
+  if (!getUserById(db, id)) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  // A label must not shadow an existing username or another alias.
+  if (getUserByUsername(db, label)) {
+    res.status(409).json({ error: "label collides with a username" });
+    return;
+  }
+  if (getAliasByLabel(db, label)) {
+    res.status(409).json({ error: "alias label already exists" });
+    return;
+  }
+  const aliasKind: AliasKind = isAliasKind(kind) ? kind : "proxy";
+  const aliasAccess: AliasAccess = isAliasAccess(access) ? access : "public";
+  let aliasService: AliasService | null = null;
+  let aliasRoot: string | null = null;
+  if (aliasKind === "proxy") {
+    if (!isAliasService(service)) {
+      res.status(400).json({ error: "proxy alias needs a valid service" });
+      return;
+    }
+    aliasService = service;
+  } else {
+    if (typeof root !== "string" || !root.startsWith("/") || root.length > 512) {
+      res.status(400).json({ error: "static alias needs an absolute root path" });
+      return;
+    }
+    aliasRoot = root;
+  }
+  let alias;
+  try {
+    alias = createAlias(db, {
+      user_id: id,
+      label,
+      kind: aliasKind,
+      service: aliasService,
+      root: aliasRoot,
+      access: aliasAccess,
+    });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
+    ) {
+      res.status(409).json({ error: "alias label already exists" });
+      return;
+    }
+    throw err;
+  }
+  const sites = await reconcileSitesSafe();
+  res.status(201).json({ alias, sites });
+});
+
+api.delete("/aliases/:id", requireAuth, requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  deleteAlias(getDb(), id);
+  const sites = await reconcileSitesSafe();
+  res.json({ ok: true, sites });
 });

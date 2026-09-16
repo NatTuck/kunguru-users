@@ -73,3 +73,18 @@ export interface JobDetail {
   job: JobInfo;
   steps: JobStepInfo[];
 }
+
+export type AliasKind = "proxy" | "static";
+export type AliasAccess = "public" | "private";
+export type AliasService = "private-app" | "public-site" | "hermes-webui";
+
+export interface Alias {
+  id: number;
+  user_id: number;
+  label: string;
+  kind: AliasKind;
+  service: AliasService | null;
+  root: string | null;
+  access: AliasAccess;
+  created_at: string;
+}

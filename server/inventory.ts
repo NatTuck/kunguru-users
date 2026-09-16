@@ -47,6 +47,12 @@ export const GATEWAY_WG_IP = process.env.KUNGURU_GATEWAY_WG_IP ?? "10.0.0.1";
 export const ACME_EMAIL = process.env.KUNGURU_ACME_EMAIL ?? "";
 export const SITES_CERT_NAME = process.env.KUNGURU_SITES_CERT ?? "kunguru-sites";
 
+// Extra (non-per-user) hostnames to fold into the combined sites certificate,
+// so one certbot cert covers the app + Bifrost + per-user/alias hosts. The
+// vhosts for these names are static (bootstrap/deploy), not rendered here.
+export const EXTRA_CERT_HOSTS = (process.env.KUNGURU_EXTRA_CERT_HOSTS ?? "")
+  .trim();
+
 // Deterministic per-user service ports (`base + users.id`).
 export const PORT_HERMES_WEBUI = 11000;
 export const PORT_PUBLIC_SITE = 12000;

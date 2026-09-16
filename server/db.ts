@@ -138,6 +138,17 @@ export const SCHEMA = `
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (user_id, host_id)
   );
+
+  CREATE TABLE IF NOT EXISTS aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL DEFAULT 'proxy' CHECK (kind IN ('proxy', 'static')),
+    service TEXT CHECK (service IN ('private-app', 'public-site', 'hermes-webui')),
+    root TEXT,
+    access TEXT NOT NULL DEFAULT 'public' CHECK (access IN ('public', 'private')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `;
 
 export function openDb(): Database.Database {
@@ -534,6 +545,66 @@ export function getAccountByUserHost(
   return db
     .prepare("SELECT * FROM accounts WHERE user_id = ? AND host_id = ?")
     .get(userId, hostId) as Account | undefined;
+}
+
+// --- Aliases (admin-managed extra hostnames for a user's services) ---
+
+export type AliasKind = "proxy" | "static";
+export type AliasAccess = "public" | "private";
+export type AliasService = "private-app" | "public-site" | "hermes-webui";
+
+export interface Alias {
+  id: number;
+  user_id: number;
+  label: string;
+  kind: AliasKind;
+  service: AliasService | null;
+  root: string | null;
+  access: AliasAccess;
+  created_at: string;
+}
+
+export function listAliases(db: Database.Database): Alias[] {
+  return db.prepare("SELECT * FROM aliases ORDER BY label ASC").all() as Alias[];
+}
+
+export function listAliasesForUser(
+  db: Database.Database,
+  userId: number,
+): Alias[] {
+  return db
+    .prepare("SELECT * FROM aliases WHERE user_id = ? ORDER BY label ASC")
+    .all(userId) as Alias[];
+}
+
+export function getAliasByLabel(
+  db: Database.Database,
+  label: string,
+): Alias | undefined {
+  return db
+    .prepare("SELECT * FROM aliases WHERE label = ?")
+    .get(label) as Alias | undefined;
+}
+
+export function createAlias(
+  db: Database.Database,
+  a: Omit<Alias, "id" | "created_at">,
+): Alias {
+  const info = db
+    .prepare(
+      `INSERT INTO aliases (user_id, label, kind, service, root, access)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(a.user_id, a.label, a.kind, a.service, a.root, a.access);
+  return {
+    id: Number(info.lastInsertRowid),
+    created_at: new Date().toISOString(),
+    ...a,
+  };
+}
+
+export function deleteAlias(db: Database.Database, id: number): void {
+  db.prepare("DELETE FROM aliases WHERE id = ?").run(id);
 }
 
 export function getAccountForUser(
