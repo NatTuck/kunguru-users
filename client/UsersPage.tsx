@@ -56,6 +56,7 @@ export default function UsersPage() {
   const [roleKey, setRoleKey] = useState<Key | null>("user");
   const [hostKey, setHostKey] = useState<Key | null>(null);
   const [confirmDisable, setConfirmDisable] = useState<number | null>(null);
+  const [confirmReset, setConfirmReset] = useState<number | null>(null);
   const [provisionFor, setProvisionFor] = useState<AdminUser | null>(null);
   const [provisionHost, setProvisionHost] = useState<string | null>(null);
   const [jobOpen, setJobOpen] = useState<JobDetail | null>(null);
@@ -207,7 +208,13 @@ export default function UsersPage() {
                       }}
                       onEnable={() => void enable(u.id)}
                       onRole={() => void setRole(u.id, u.role === "admin" ? "user" : "admin")}
-                      onReset={() => void resetPassword(u.id)}
+                      confirmReset={confirmReset === u.id}
+                      onRequestReset={() => setConfirmReset(u.id)}
+                      onCancelReset={() => setConfirmReset(null)}
+                      onReset={() => {
+                        void resetPassword(u.id);
+                        setConfirmReset(null);
+                      }}
                       onProvision={() => {
                         setProvisionFor(u);
                         const firstHost = hosts[0]?.id;
@@ -272,6 +279,9 @@ function UserRow({
   onDisable,
   onEnable,
   onRole,
+  confirmReset,
+  onRequestReset,
+  onCancelReset,
   onReset,
   onProvision,
   onAliases,
@@ -286,6 +296,9 @@ function UserRow({
   onDisable: () => void;
   onEnable: () => void;
   onRole: () => void;
+  confirmReset: boolean;
+  onRequestReset: () => void;
+  onCancelReset: () => void;
   onReset: () => void;
   onProvision: () => void;
   onAliases: () => void;
@@ -343,9 +356,20 @@ function UserRow({
             >
               Make {u.role === "admin" ? "user" : "admin"}
             </Button>
-            <Button size="sm" variant="outline" isDisabled={busy} onPress={onReset}>
-              Reset password
-            </Button>
+            {confirmReset ? (
+              <span className="flex items-center gap-1">
+                <Button size="sm" variant="danger" isDisabled={busy} onPress={onReset}>
+                  Confirm reset
+                </Button>
+                <Button size="sm" variant="tertiary" onPress={onCancelReset}>
+                  Cancel
+                </Button>
+              </span>
+            ) : (
+              <Button size="sm" variant="outline" isDisabled={busy} onPress={onRequestReset}>
+                Reset password
+              </Button>
+            )}
             <Button size="sm" variant="outline" isDisabled={busy} onPress={onAliases}>
               Aliases
             </Button>
