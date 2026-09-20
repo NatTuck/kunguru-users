@@ -13,14 +13,14 @@ const CLIENTS: { os: string; items: ClientLink[] }[] = [
   {
     os: "Linux",
     items: [
-      { name: "Gajim", href: "https://gajim.org/", note: "Full-featured desktop client." },
+      { name: "Gajim", href: "https://gitlab.com/gajim/gajim", note: "Full-featured desktop client." },
       { name: "Dino", href: "https://dino.im/", note: "Modern, simple GTK client." },
     ],
   },
   {
     os: "Windows",
     items: [
-      { name: "Gajim", href: "https://gajim.org/", note: "Full-featured desktop client." },
+      { name: "Gajim", href: "https://gitlab.com/gajim/gajim", note: "Full-featured desktop client." },
       { name: "Psi", href: "https://psi-im.org/", note: "Lightweight desktop client." },
     ],
   },
