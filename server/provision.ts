@@ -155,7 +155,7 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         }
       }
       if (s.def.name === "webui") {
-        // Per-user WebUI on `<user>-hermes.users.<base>`: bound to the address
+        // Per-user WebUI on `<user>-agent.users.<base>`: bound to the address
         // the gateway's nginx reaches (loopback when co-located), trusting only
         // the gateway as a proxy for the Remote-User header.
         const coLocated = s.host.ssh_target === "localhost";

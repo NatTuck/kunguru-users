@@ -18,9 +18,12 @@ app.get("/api/ping", (_req, res) => {
 
 // nginx `auth_request` target for the private per-user site hosts. Runs on
 // loopback (the gateway's nginx) only; validates the app session and asserts
-// the requested private host (`<user>.users.<base>` / `<user>-hermes.users.<base>`)
+// the requested private host (`<user>.users.<base>` / `<user>-agent.users.<base>`)
 // resolves to the session user. Returns 200 + X-Auth-User (which nginx forwards
-// as the trusted Remote-User header) or 401/403 — never a redirect.
+// as the trusted Remote-User header). No session, or a session that does not own
+// the host, returns 401 so nginx's `error_page 401 = @login` sends the visitor
+// to the login form (where they can sign in as the owner). Never redirects
+// itself.
 function isLoopback(addr: string | undefined): boolean {
   if (!addr) return false;
   const a = addr.startsWith("::ffff:") ? addr.slice(7) : addr;
@@ -59,7 +62,9 @@ app.get("/internal/auth", (req, res) => {
     if (alias && alias.access === "private") ownerId = alias.user_id;
   }
   if (ownerId == null || ownerId !== ctx.user.id) {
-    res.status(403).end();
+    // A valid session that does not own this private host: 401 (not 403) so
+    // nginx redirects to the login form instead of showing a bare 403.
+    res.status(401).end();
     return;
   }
   res.setHeader("Cache-Control", "no-store");

@@ -1,4 +1,4 @@
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuthStore } from "./authStore";
 import type { ReactNode } from "react";
 
@@ -32,7 +32,14 @@ export function RequireAdmin({ children }: { children?: ReactNode }) {
 export function GuestOnly({ children }: { children: ReactNode }) {
   const user = useCurrentUser();
   const initializing = useInitializing();
+  const location = useLocation();
   if (initializing) return <p>Loading…</p>;
-  if (user) return <Navigate to="/" replace />;
+  // When a `next` target is present, let an already-authenticated visitor see
+  // the login form: a private per-user site they don't own redirects here, and
+  // they must be able to sign in as the owner. Without `next`, keep the usual
+  // "signed-in users don't see /login" behavior.
+  if (user && !new URLSearchParams(location.search).get("next")) {
+    return <Navigate to="/" replace />;
+  }
   return <>{children}</>;
 }

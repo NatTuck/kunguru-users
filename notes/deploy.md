@@ -97,6 +97,23 @@ curl -s  https://users.ironbeard.com/api/auth/me          # 401 (unauth)
 
 ## Upgrading
 
+**The deployment at `~/.local/apps/kunguru-users` must be a git checkout** that
+tracks `origin/main` (see §1); that is the standard deployment method. If you
+find a plain copy with no `.git` (as `drongo` was), convert it in place — the
+checkout's tracked files are replaced with the remote's, while ignored state
+(`data/`, `dist/`, `node_modules/`) is preserved:
+
+```sh
+cd ~/.local/apps/kunguru-users
+git init
+git remote add origin https://github.com/NatTuck/kunguru-users.git
+git fetch --depth 1 origin main
+git checkout -f -b main FETCH_HEAD
+git branch --set-upstream-to=origin/main main
+```
+
+Then deploy:
+
 ```sh
 cd ~/.local/apps/kunguru-users
 git pull --ff-only
@@ -104,6 +121,16 @@ mise install                      # no-op unless the pinned node changed
 pnpm install --frozen-lockfile
 pnpm build
 systemctl --user restart kunguru-users
+```
+
+On hosts without mise (`drongo`), use the app's bundled Node toolchain instead:
+`PATH="$HOME/.hermes/node/bin:$PATH" pnpm …`.
+
+After a change that affects per-user site routing or the WebUI hostname
+(`server/sites.ts`), reconcile nginx + the combined cert:
+
+```sh
+pnpm sites-reconcile              # or: mise exec -- pnpm sites-reconcile
 ```
 
 Database lives in `<checkout>/data/` (gitignored) and is preserved across pulls.

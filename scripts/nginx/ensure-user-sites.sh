@@ -11,7 +11,7 @@
 #   KUNGURU_AUTH_TARGET  host:port of the app's /internal/auth (127.0.0.1:3030)
 #
 # Slots (see server/sites.ts):
-#   <user>-hermes.users.<base>  -> private (auth_request -> Remote-User)
+#   <user>-agent.users.<base>   -> private (auth_request -> Remote-User)
 #   <user>.users.<base>         -> private (auth_request -> Remote-User)
 #   <user>.<base>               -> public
 #

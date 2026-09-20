@@ -170,7 +170,7 @@ export async function loginHandler(
 /**
  * Validate a post-login `next` target. Allows same-origin absolute paths and
  * cross-origin URLs only on a single-label host under the private subtree
- * (`<user>.users.<base>` / `<user>-hermes.users.<base>`). Returns null when
+ * (`<user>.users.<base>` / `<user>-agent.users.<base>`). Returns null when
  * unsafe.
  */
 export function sanitizeNext(raw: unknown, privateDomain: string): string | null {

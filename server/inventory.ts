@@ -25,7 +25,7 @@ export const BASE_DOMAIN = (process.env.KUNGURU_BASE_DOMAIN ?? "")
   .toLowerCase();
 
 // Private (authenticated) subtree: `<user>.users.<base>` and
-// `<user>-hermes.users.<base>`. Also the default session-cookie domain.
+// `<user>-agent.users.<base>`. Also the default session-cookie domain.
 export const PRIVATE_DOMAIN = BASE_DOMAIN ? `users.${BASE_DOMAIN}` : "";
 
 // Session cookie Domain. Defaults to the private subtree so the browser also

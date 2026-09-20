@@ -124,7 +124,7 @@ api.post("/users", requireAuth, requireAdmin, async (req, res) => {
   if (!isValidUsername(username)) {
     res.status(400).json({
       error:
-        "invalid username: lowercase letters/digits/hyphens, starting with a letter, not ending in '-hermes', max 32 (must be a DNS label)",
+        "invalid username: lowercase letters/digits/hyphens, starting with a letter, not ending in '-agent', max 32 (must be a DNS label)",
     });
     return;
   }
@@ -530,7 +530,7 @@ api.post("/users/:id/aliases", requireAuth, requireAdmin, async (req, res) => {
   if (!isProvisionableAliasLabel(label)) {
     res.status(400).json({
       error:
-        "invalid label: lowercase letters/digits/hyphens, starting with a letter, not '-hermes', not reserved",
+        "invalid label: lowercase letters/digits/hyphens, starting with a letter, not '-agent', not reserved",
     });
     return;
   }

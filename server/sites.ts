@@ -9,7 +9,7 @@ import type { Alias, SiteUserRow } from "./db";
 // Generic per-user site model. Each user gets three slots, all served by the
 // gateway's nginx and reverse-proxied over the WireGuard LAN to the user's host:
 //
-//   hermes-webui  <user>-hermes.users.<base>  11000+id  private (self only)
+//   hermes-webui  <user>-agent.users.<base>   11000+id  private (self only)
 //   private-app   <user>.users.<base>         13000+id  private (self only)
 //   public-site   <user>.<base>               12000+id  public
 //
@@ -17,7 +17,8 @@ import type { Alias, SiteUserRow } from "./db";
 // nginx `auth_request` can see the app session; `public` slots do not.
 //
 // Users are provisioned as DNS labels, so the hostnames are unambiguous:
-// usernames may not end in `-hermes` (reserved for the WebUI slot).
+// usernames may not end in `-agent` (reserved for the WebUI slot, matching the
+// XMPP agent identity `<user>-agent`).
 //
 // Aliases add admin-managed extra hostnames for a user: a `proxy` alias points
 // at one of the user's service ports, a `static` alias serves files from a
@@ -60,8 +61,13 @@ function upstreamHost(sshTarget: string): string {
   return t === "localhost" ? "127.0.0.1" : t;
 }
 
+// Suffix reserved for the tenant's Hermes WebUI slot, matching the XMPP agent
+// identity `<user>-agent`. Usernames and alias labels may not end in it (a
+// label `foo-agent` would otherwise shadow user `foo`'s WebUI host).
+const AGENT_SUFFIX = "-agent";
+
 export function hermesWebuiHost(username: string): string {
-  return `${username}-hermes.users.${BASE_DOMAIN}`;
+  return `${username}${AGENT_SUFFIX}.users.${BASE_DOMAIN}`;
 }
 
 export function privateAppHost(username: string): string {
@@ -147,7 +153,7 @@ export function siteRoutes(
 
 /**
  * Resolve the owning username for a private host under `users.<base>`
- * (`<user>.users.<base>` or `<user>-hermes.users.<base>`). Returns null for the
+ * (`<user>.users.<base>` or `<user>-agent.users.<base>`). Returns null for the
  * base domain, public hosts, deeper names, or when unconfigured. Private
  * *alias* labels are resolved separately (via the aliases table).
  */
@@ -158,7 +164,7 @@ export function privateUsernameFromHost(host: string | undefined): string | null
   if (!h.endsWith(suffix)) return null;
   let label = h.slice(0, -suffix.length);
   if (!label || label.includes(".")) return null;
-  if (label.endsWith("-hermes")) label = label.slice(0, -"-hermes".length);
+  if (label.endsWith(AGENT_SUFFIX)) label = label.slice(0, -AGENT_SUFFIX.length);
   return label || null;
 }
 
@@ -174,7 +180,7 @@ export function privateLabelFromHost(host: string | undefined): string | null {
 }
 
 // Labels double as DNS labels (`<label>.<base>` / `<label>.users.<base>`), so
-// they must be valid labels, must not collide with the reserved `-hermes`
+// they must be valid labels, must not collide with the reserved `-agent`
 // suffix, and must not shadow infrastructure hostnames.
 const RESERVED_LABELS = new Set([
   "chat",
@@ -199,14 +205,14 @@ const USERNAME_RE = /^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$/;
 
 export function isProvisionableUsername(value: unknown): value is string {
   if (typeof value !== "string" || !USERNAME_RE.test(value)) return false;
-  if (value.endsWith("-hermes")) return false;
+  if (value.endsWith(AGENT_SUFFIX)) return false;
   if (RESERVED_LABELS.has(value)) return false;
   return true;
 }
 
 export function isProvisionableAliasLabel(value: unknown): value is string {
   if (typeof value !== "string" || !USERNAME_RE.test(value)) return false;
-  if (value.endsWith("-hermes")) return false;
+  if (value.endsWith(AGENT_SUFFIX)) return false;
   if (RESERVED_LABELS.has(value)) return false;
   return true;
 }
