@@ -7,8 +7,11 @@ interface AuthState {
   initializing: boolean;
   loginError: string | null;
   loggingIn: boolean;
+  changing: boolean;
+  changeError: string | null;
   initialize: () => Promise<void>;
   login: (username: string, password: string, next?: string) => Promise<boolean>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<boolean>;
   logout: () => Promise<void>;
 }
 
@@ -17,6 +20,8 @@ export const useAuthStore = create<AuthState>((set) => ({
   initializing: true,
   loginError: null,
   loggingIn: false,
+  changing: false,
+  changeError: null,
 
   initialize: async () => {
     try {
@@ -51,6 +56,25 @@ export const useAuthStore = create<AuthState>((set) => ({
         loggingIn: false,
         loginError:
           err instanceof ApiError ? err.message : "an unexpected error occurred",
+      });
+      return false;
+    }
+  },
+
+  changePassword: async (currentPassword, newPassword) => {
+    set({ changing: true, changeError: null });
+    try {
+      await post<{ ok: boolean }>("/api/auth/password", {
+        currentPassword,
+        newPassword,
+      });
+      set({ changing: false });
+      return true;
+    } catch (err) {
+      set({
+        changing: false,
+        changeError:
+          err instanceof ApiError ? err.message : "failed to change password",
       });
       return false;
     }

@@ -4,6 +4,7 @@ import {
   createAlias,
   createUser,
   deleteAlias,
+  deleteSessionsForUser,
   generatePassword,
   getAccountForUser,
   getAliasByLabel,
@@ -33,6 +34,7 @@ import {
   meHandler,
   requireAdmin,
   requireAuth,
+  verifyPassword,
 } from "./auth";
 import {
   deactivateUserAccess,
@@ -98,6 +100,148 @@ function currentUserId(res: {
 api.post("/auth/login", loginHandler);
 api.post("/auth/logout", logoutHandler);
 api.get("/auth/me", requireAuth, meHandler);
+
+// --- Self-service password change ---
+// Rotates the signed-in user's shared web/XMPP password. The Snikket credential
+// is pushed FIRST; if that job fails the web password is left untouched, so the
+// two never drift. Other sessions are dropped (the current browser is kept).
+
+const PASSWORD_MIN = 12;
+const PASSWORD_MAX = 128;
+
+function passwordPolicyError(password: string, username: string): string | null {
+  if (password.length < PASSWORD_MIN) {
+    return `password must be at least ${PASSWORD_MIN} characters`;
+  }
+  if (password.length > PASSWORD_MAX) {
+    return `password must be at most ${PASSWORD_MAX} characters`;
+  }
+  if (username && password.toLowerCase().includes(username.toLowerCase())) {
+    return "password must not contain your username";
+  }
+  return null;
+}
+
+// Small per-user throttle for wrong current-password attempts (independent of
+// the login lockout in auth.ts).
+function makeThrottle(maxFailures: number, windowMs: number, lockMs: number) {
+  const recs = new Map<
+    number,
+    { count: number; windowStart: number; lockedUntil: number }
+  >();
+  return {
+    lockedMs(key: number): number {
+      const rec = recs.get(key);
+      if (!rec) return 0;
+      const now = Date.now();
+      if (now >= rec.lockedUntil) {
+        if (now - rec.windowStart > windowMs) recs.delete(key);
+        return 0;
+      }
+      return rec.lockedUntil - now;
+    },
+    noteFailure(key: number): void {
+      const now = Date.now();
+      const rec = recs.get(key);
+      if (!rec || now - rec.windowStart > windowMs) {
+        recs.set(key, { count: 1, windowStart: now, lockedUntil: 0 });
+        return;
+      }
+      rec.count += 1;
+      if (rec.count >= maxFailures) rec.lockedUntil = now + lockMs;
+    },
+    clear(key: number): void {
+      recs.delete(key);
+    },
+  };
+}
+
+const pwThrottle = makeThrottle(5, 15 * 60 * 1000, 60 * 1000);
+
+api.post("/auth/password", requireAuth, async (req, res) => {
+  const session = res.locals.session as
+    | { user: { id: number; username: string }; tokenHash: string }
+    | undefined;
+  if (!session) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const { id: userId, username } = session.user;
+
+  const lockRemaining = pwThrottle.lockedMs(userId);
+  if (lockRemaining > 0) {
+    res.status(429).json({
+      error: "too many failed attempts",
+      retryAfterSec: Math.ceil(lockRemaining / 1000),
+    });
+    return;
+  }
+
+  const { currentPassword, newPassword } = (req.body ?? {}) as {
+    currentPassword?: unknown;
+    newPassword?: unknown;
+  };
+  if (typeof currentPassword !== "string" || typeof newPassword !== "string") {
+    res.status(400).json({ error: "currentPassword and newPassword are required" });
+    return;
+  }
+
+  const db = getDb();
+  const user = getUserById(db, userId);
+  if (!user) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+
+  const ok = await verifyPassword(user.password_hash, currentPassword);
+  if (!ok) {
+    pwThrottle.noteFailure(userId);
+    res.status(400).json({ error: "current password is incorrect" });
+    return;
+  }
+  if (newPassword === currentPassword) {
+    res.status(400).json({ error: "new password must be different from the current one" });
+    return;
+  }
+  const policyError = passwordPolicyError(newPassword, username);
+  if (policyError) {
+    res.status(400).json({ error: policyError });
+    return;
+  }
+
+  // Push to Snikket first (when the user has an XMPP account) so the web and
+  // XMPP passwords never drift; abort the change if the sync fails.
+  let provisioning: unknown = null;
+  if (getAccountForUser(db, userId)) {
+    try {
+      const result = await syncSnikketPassword({
+        user: { id: userId, username },
+        password: newPassword,
+        createdBy: userId,
+      });
+      if (result.status !== "succeeded") {
+        res.status(502).json({
+          error: "could not update your XMPP password; your password was not changed",
+          failedStep: result.failedStep,
+          jobId: result.jobId,
+        });
+        return;
+      }
+      provisioning = toProvisionView(result);
+    } catch (err) {
+      res.status(502).json({
+        error: "could not update your XMPP password; your password was not changed",
+        message: err instanceof Error ? err.message : "snikket sync failed",
+      });
+      return;
+    }
+  }
+
+  updateUserPasswordHash(db, userId, await hashPassword(newPassword));
+  deleteSessionsForUser(db, userId, session.tokenHash);
+  pwThrottle.clear(userId);
+  res.json({ ok: true, provisioning });
+});
 
 // --- Public config ---
 // Domain names the SPA needs to build per-user tool URLs (the agent WebUI host

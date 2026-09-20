@@ -435,6 +435,22 @@ export function deleteExpiredSessions(db: Database.Database, now = Date.now()): 
   db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now);
 }
 
+// Drop a user's sessions, optionally sparing the one making the change (so a
+// password change logs out other devices but keeps the current browser in).
+export function deleteSessionsForUser(
+  db: Database.Database,
+  userId: number,
+  exceptTokenHash?: string,
+): void {
+  if (exceptTokenHash) {
+    db.prepare(
+      "DELETE FROM sessions WHERE user_id = ? AND token_hash != ?",
+    ).run(userId, exceptTokenHash);
+  } else {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+  }
+}
+
 export async function setAdminPassword(
   db: Database.Database,
   password: string,
