@@ -42,6 +42,8 @@ import {
 } from "./provision";
 import { isProvisionableAliasLabel, isProvisionableUsername } from "./sites";
 import { reconcileUserSites } from "./nginx";
+import { BASE_DOMAIN, PRIVATE_DOMAIN } from "./inventory";
+import { XMPP_DOMAIN } from "./bifrost";
 
 export const api = Router();
 
@@ -96,6 +98,17 @@ function currentUserId(res: {
 api.post("/auth/login", loginHandler);
 api.post("/auth/logout", logoutHandler);
 api.get("/auth/me", requireAuth, meHandler);
+
+// --- Public config ---
+// Domain names the SPA needs to build per-user tool URLs (the agent WebUI host
+// `<user>-agent.users.<base>` and the XMPP domain). Public: these are DNS names.
+api.get("/config", (_req, res) => {
+  res.json({
+    baseDomain: BASE_DOMAIN,
+    privateDomain: PRIVATE_DOMAIN,
+    xmppDomain: XMPP_DOMAIN,
+  });
+});
 
 // --- Hosts (admin) ---
 
