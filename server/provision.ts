@@ -260,6 +260,38 @@ export async function provisionStandardAccount(opts: {
   return result;
 }
 
+/**
+ * Pushes a literal XMPP message from the tenant's Hermes agent account
+ * (`<user>-agent@<domain>`) to the tenant's own account, using the agent's
+ * already-configured XMPP credentials on the user-host. This is a plain
+ * `hermes send` -- the XMPP plugin's one-shot standalone sender, so there is no
+ * LLM turn and the gateway need not be running. Runs inline (not an audit job)
+ * and returns the captured output.
+ */
+export async function sendAgentXmppMessage(opts: {
+  user: Pick<User, "id" | "username">;
+  message: string;
+}): Promise<{ ok: boolean; output: string }> {
+  const db = getDb();
+  const account = getAccountForUser(db, opts.user.id);
+  if (!account) throw new Error("user has no provisioned account");
+  const script = await readFile(join(SCRIPTS_DIR, "hermes/message.sh"), "utf8");
+  const res = await runRemote({
+    sshUser: SSH_USER,
+    sshTarget: account.host.ssh_target,
+    script,
+    env: {
+      USERNAME: opts.user.username,
+      XMPP_MESSAGE: opts.message,
+      XMPP_TARGET: `${opts.user.username}@${XMPP_DOMAIN}`,
+    },
+    // XMPP connect can take a while on a slow link (XMPP_CONNECT_TIMEOUT_SECS
+    // defaults to 180s); allow headroom over that.
+    timeoutMs: 240_000,
+  });
+  return { ok: res.exitCode === 0, output: res.output };
+}
+
 /** Re-pushes the shared password to Snikket only (used on reset/disable). */
 export async function syncSnikketPassword(opts: {
   user: Pick<User, "id" | "username">;

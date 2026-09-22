@@ -11,6 +11,7 @@ import {
   Select,
   Spinner,
   Table,
+  TextArea,
 } from "@heroui/react";
 import type { Key } from "@heroui/react";
 import { useAuthStore } from "./authStore";
@@ -22,6 +23,7 @@ import type {
   Alias,
   Host,
   JobDetail,
+  MessageResult,
   PasswordReveal,
   Role,
 } from "./types";
@@ -61,6 +63,7 @@ export default function UsersPage() {
   const [provisionHost, setProvisionHost] = useState<string | null>(null);
   const [jobOpen, setJobOpen] = useState<JobDetail | null>(null);
   const [aliasesFor, setAliasesFor] = useState<AdminUser | null>(null);
+  const [messageFor, setMessageFor] = useState<AdminUser | null>(null);
 
   useEffect(() => {
     if (hostKey == null && hosts.length > 0) setHostKey(hosts[0].id);
@@ -221,6 +224,7 @@ export default function UsersPage() {
                         setProvisionHost(u.account ? String(u.account.hostId) : firstHost != null ? String(firstHost) : null);
                       }}
                       onAliases={() => setAliasesFor(u)}
+                      onMessage={() => setMessageFor(u)}
                     />
                   ))}
                 </Table.Body>
@@ -264,6 +268,9 @@ export default function UsersPage() {
       {aliasesFor && (
         <AliasesModal user={aliasesFor} onClose={() => setAliasesFor(null)} />
       )}
+      {messageFor && (
+        <MessageModal user={messageFor} onClose={() => setMessageFor(null)} />
+      )}
     </div>
   );
 }
@@ -285,6 +292,7 @@ function UserRow({
   onReset,
   onProvision,
   onAliases,
+  onMessage,
 }: {
   user: AdminUser;
   meId?: number;
@@ -302,9 +310,11 @@ function UserRow({
   onReset: () => void;
   onProvision: () => void;
   onAliases: () => void;
+  onMessage: () => void;
 }) {
   const isSelf = meId === u.id;
   const disabled = !u.enabled;
+  const canMessage = !disabled && u.account?.status === "active";
   return (
     <Table.Row>
       <Table.Cell>
@@ -373,6 +383,11 @@ function UserRow({
             <Button size="sm" variant="outline" isDisabled={busy} onPress={onAliases}>
               Aliases
             </Button>
+            {canMessage && (
+              <Button size="sm" variant="outline" isDisabled={busy} onPress={onMessage}>
+                Message
+              </Button>
+            )}
             {canProvision && (
               <Button size="sm" variant="secondary" isDisabled={busy} onPress={onProvision}>
                 {u.account ? "Repair" : "Provision"}
@@ -758,6 +773,91 @@ function AliasesModal({
             </Button>
           </div>
         </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function MessageModal({
+  user: u,
+  onClose,
+}: {
+  user: AdminUser;
+  onClose: () => void;
+}) {
+  const sendMessage = useUsersStore((s) => s.sendMessage);
+  const busy = useUsersStore((s) => s.busy);
+  const [message, setMessage] = useState("");
+  const [result, setResult] = useState<MessageResult | null>(null);
+
+  const send = async () => {
+    setResult(null);
+    const r = await sendMessage(u.id, message);
+    if (r) setResult(r);
+    if (r?.ok) setMessage("");
+  };
+
+  return (
+    <ModalShell
+      open
+      onClose={onClose}
+      title={`Message as agent — ${u.username}`}
+      width="sm:max-w-[520px]"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="tertiary" onPress={onClose}>
+            Close
+          </Button>
+          <Button
+            variant="primary"
+            isDisabled={busy || !message.trim()}
+            onPress={() => void send()}
+          >
+            {busy ? (
+              <span className="inline-flex items-center gap-2">
+                <Spinner size="sm" /> Sending…
+              </span>
+            ) : (
+              "Send"
+            )}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-600">
+          Sends a plain XMPP message from <Mono>{u.username}-agent</Mono> to{" "}
+          <Mono>{u.username}</Mono>. No agent/LLM turn.
+        </p>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="agent-message">Message</Label>
+          <TextArea
+            id="agent-message"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            rows={4}
+            placeholder="Hi from the admin app"
+          />
+        </div>
+        {result &&
+          (result.ok ? (
+            <Alert status="success">
+              <Alert.Content>
+                <Alert.Description>Message sent.</Alert.Description>
+              </Alert.Content>
+            </Alert>
+          ) : (
+            <Alert status="danger">
+              <Alert.Content>
+                <Alert.Title>Send failed</Alert.Title>
+                <Alert.Description>
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-xs">
+                    {result.output || "(no output)"}
+                  </pre>
+                </Alert.Description>
+              </Alert.Content>
+            </Alert>
+          ))}
       </div>
     </ModalShell>
   );

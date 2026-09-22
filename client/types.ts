@@ -37,6 +37,11 @@ export interface ProvisionInfo {
   message?: string;
 }
 
+export interface MessageResult {
+  ok: boolean;
+  output: string;
+}
+
 export interface PasswordReveal {
   user: User;
   password: string;

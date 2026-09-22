@@ -3,6 +3,7 @@ import { ApiError, get, patch, post } from "./api";
 import type {
   AdminUser,
   JobDetail,
+  MessageResult,
   PasswordReveal,
   ProvisionInfo,
   Role,
@@ -22,6 +23,7 @@ interface UsersState {
   enable: (id: number) => Promise<void>;
   resetPassword: (id: number) => Promise<void>;
   provision: (id: number, hostId: number) => Promise<void>;
+  sendMessage: (id: number, message: string) => Promise<MessageResult | null>;
   job: (id: number) => Promise<JobDetail>;
   clearReveal: () => void;
   clearActionError: () => void;
@@ -173,6 +175,20 @@ export const useUsersStore = create<UsersState>((set) => ({
       await refreshUsers(set);
     } catch (err) {
       set({ busy: false, actionError: await msg(err, "failed to provision user") });
+    }
+  },
+
+  sendMessage: async (id, message) => {
+    set({ busy: true, actionError: null });
+    try {
+      const data = await post<MessageResult>(`/api/users/${id}/message`, {
+        message,
+      });
+      set({ busy: false });
+      return data;
+    } catch (err) {
+      set({ busy: false, actionError: await msg(err, "failed to send message") });
+      return null;
     }
   },
 

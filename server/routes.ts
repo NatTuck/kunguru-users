@@ -39,6 +39,7 @@ import {
 import {
   deactivateUserAccess,
   provisionStandardAccount,
+  sendAgentXmppMessage,
   syncSnikketPassword,
   type ProvisionResult,
 } from "./provision";
@@ -614,6 +615,55 @@ api.post("/users/:id/reset-password", requireAuth, requireAdmin, async (req, res
     password,
     provisioning,
   });
+});
+
+// Send an XMPP message to a user from their Hermes agent account. This is a
+// literal `hermes send` (no LLM turn, no running gateway needed): the agent's
+// configured XMPP credentials push the message to the tenant's own JID.
+const MESSAGE_MAX = 2000;
+
+api.post("/users/:id/message", requireAuth, requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const { message } = (req.body ?? {}) as { message?: unknown };
+  if (typeof message !== "string" || !message.trim()) {
+    res.status(400).json({ error: "message is required" });
+    return;
+  }
+  if (message.length > MESSAGE_MAX) {
+    res.status(400).json({ error: `message must be at most ${MESSAGE_MAX} characters` });
+    return;
+  }
+  const db = getDb();
+  const target = getUserById(db, id);
+  if (!target) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (!target.enabled) {
+    res.status(400).json({ error: "user is disabled; enable it first" });
+    return;
+  }
+  if (!getAccountForUser(db, id)) {
+    res.status(400).json({ error: "user is not provisioned; provision it first" });
+    return;
+  }
+  try {
+    const result = await sendAgentXmppMessage({
+      user: { id: target.id, username: target.username },
+      message,
+    });
+    // The send attempt's outcome is carried in the body (ok/output) so the UI
+    // can show the captured output even on a delivery failure.
+    res.json({ ok: result.ok, output: result.output });
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "failed to send message",
+    });
+  }
 });
 
 // --- Job audit trail (admin) ---
