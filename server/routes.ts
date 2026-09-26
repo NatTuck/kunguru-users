@@ -45,6 +45,7 @@ import {
 } from "./provision";
 import { isProvisionableAliasLabel, isProvisionableUsername } from "./sites";
 import { reconcileUserSites } from "./nginx";
+import { refreshModelsAndRestartWebuis } from "./models";
 import { BASE_DOMAIN, PRIVATE_DOMAIN } from "./inventory";
 import { XMPP_DOMAIN } from "./bifrost";
 
@@ -662,6 +663,21 @@ api.post("/users/:id/message", requireAuth, requireAdmin, async (req, res) => {
   } catch (err) {
     res.status(502).json({
       error: err instanceof Error ? err.message : "failed to send message",
+    });
+  }
+});
+
+// --- Upstream model refresh (admin) ---
+// Re-lists the gateway's upstream provider models and restarts every tenant's
+// WebUI so it drops its cached catalog. Needed because Bifrost does not re-list
+// providers on a schedule: a model renamed at an upstream (e.g. a vLLM
+// served-model-name change) stays invisible to `/v1/models` until refreshed.
+api.post("/models/refresh", requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    res.json(await refreshModelsAndRestartWebuis());
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "failed to refresh models",
     });
   }
 });

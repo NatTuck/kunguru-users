@@ -125,6 +125,31 @@ export async function listVirtualKeys(): Promise<VirtualKeySummary[]> {
   return data?.virtual_keys ?? [];
 }
 
+export interface CatalogModel {
+  name: string;
+  provider: string;
+}
+
+/**
+ * Forces Bifrost to re-list a provider's upstream models. Bifrost only refreshes
+ * a provider's model catalog on provider add/update or an explicit refresh, so
+ * a model rename at the upstream (e.g. a vLLM served-model-name change) stays
+ * invisible to `/v1/models` and is rejected by `allowed_models: ["*"]` catalog
+ * validation until this runs. Re-sending the current provider configuration via
+ * PUT triggers Bifrost's provider-update re-list.
+ */
+export async function refreshProviderModels(provider: string): Promise<void> {
+  const path = `/api/providers/${encodeURIComponent(provider)}`;
+  const current = await api<Record<string, unknown>>("GET", path);
+  await api("PUT", path, current);
+}
+
+/** Lists the models Bifrost's catalog currently exposes (as `provider/model`). */
+export async function listCatalogModels(): Promise<CatalogModel[]> {
+  const data = await api<{ models?: CatalogModel[] }>("GET", "/api/models");
+  return data?.models ?? [];
+}
+
 /** Creates an active per-user virtual key covering the configured providers. */
 export async function createVirtualKey(opts: {
   name: string;

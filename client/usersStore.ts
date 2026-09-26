@@ -4,6 +4,7 @@ import type {
   AdminUser,
   JobDetail,
   MessageResult,
+  ModelsRefreshResult,
   PasswordReveal,
   ProvisionInfo,
   Role,
@@ -24,6 +25,7 @@ interface UsersState {
   resetPassword: (id: number) => Promise<void>;
   provision: (id: number, hostId: number) => Promise<void>;
   sendMessage: (id: number, message: string) => Promise<MessageResult | null>;
+  refreshModels: () => Promise<ModelsRefreshResult | null>;
   job: (id: number) => Promise<JobDetail>;
   clearReveal: () => void;
   clearActionError: () => void;
@@ -188,6 +190,18 @@ export const useUsersStore = create<UsersState>((set) => ({
       return data;
     } catch (err) {
       set({ busy: false, actionError: await msg(err, "failed to send message") });
+      return null;
+    }
+  },
+
+  refreshModels: async () => {
+    set({ busy: true, actionError: null });
+    try {
+      const data = await post<ModelsRefreshResult>("/api/models/refresh");
+      set({ busy: false });
+      return data;
+    } catch (err) {
+      set({ busy: false, actionError: await msg(err, "failed to refresh models") });
       return null;
     }
   },

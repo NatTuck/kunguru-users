@@ -42,6 +42,30 @@ export interface MessageResult {
   output: string;
 }
 
+export interface CatalogModel {
+  name: string;
+  provider: string;
+}
+
+export interface ProviderRefreshResult {
+  provider: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface WebuiRestartResult {
+  username: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface ModelsRefreshResult {
+  providers: ProviderRefreshResult[];
+  models: CatalogModel[];
+  webuis: WebuiRestartResult[];
+  ok: boolean;
+}
+
 export interface PasswordReveal {
   user: User;
   password: string;

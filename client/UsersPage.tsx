@@ -24,6 +24,7 @@ import type {
   Host,
   JobDetail,
   MessageResult,
+  ModelsRefreshResult,
   PasswordReveal,
   Role,
 } from "./types";
@@ -46,6 +47,7 @@ export default function UsersPage() {
     enable,
     resetPassword,
     provision,
+    refreshModels,
     clearReveal,
   } = useUsersStore();
 
@@ -64,6 +66,14 @@ export default function UsersPage() {
   const [jobOpen, setJobOpen] = useState<JobDetail | null>(null);
   const [aliasesFor, setAliasesFor] = useState<AdminUser | null>(null);
   const [messageFor, setMessageFor] = useState<AdminUser | null>(null);
+  const [confirmRefresh, setConfirmRefresh] = useState(false);
+  const [modelsResult, setModelsResult] = useState<ModelsRefreshResult | null>(null);
+
+  const doRefreshModels = async () => {
+    setConfirmRefresh(false);
+    const result = await refreshModels();
+    if (result) setModelsResult(result);
+  };
 
   useEffect(() => {
     if (hostKey == null && hosts.length > 0) setHostKey(hosts[0].id);
@@ -81,12 +91,21 @@ export default function UsersPage() {
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Manage users</h1>
-        <p className="mt-1 text-sm text-neutral-500">
-          Creating a user provisions a Linux account on the chosen machine and a matching XMPP
-          account on Snikket, sharing one password.
-        </p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Manage users</h1>
+          <p className="mt-1 text-sm text-neutral-500">
+            Creating a user provisions a Linux account on the chosen machine and a matching XMPP
+            account on Snikket, sharing one password.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          isDisabled={busy}
+          onPress={() => setConfirmRefresh(true)}
+        >
+          Refresh models &amp; WebUIs
+        </Button>
       </div>
 
       {actionError && (
@@ -96,6 +115,12 @@ export default function UsersPage() {
               <Alert.Description>{actionError}</Alert.Description>
             </Alert.Content>
           </Alert>
+        </div>
+      )}
+
+      {modelsResult && (
+        <div className="mb-4">
+          <ModelsRefreshAlert result={modelsResult} onDismiss={() => setModelsResult(null)} />
         </div>
       )}
 
@@ -271,7 +296,117 @@ export default function UsersPage() {
       {messageFor && (
         <MessageModal user={messageFor} onClose={() => setMessageFor(null)} />
       )}
+      {confirmRefresh && (
+        <RefreshModelsModal
+          busy={busy}
+          onClose={() => setConfirmRefresh(false)}
+          onConfirm={() => void doRefreshModels()}
+        />
+      )}
     </div>
+  );
+}
+
+function RefreshModelsModal({
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Refresh models & restart WebUIs"
+      width="sm:max-w-[520px]"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="tertiary" onPress={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" isDisabled={busy} onPress={onConfirm}>
+            {busy ? (
+              <span className="inline-flex items-center gap-2">
+                <Spinner size="sm" /> Refreshing…
+              </span>
+            ) : (
+              "Refresh"
+            )}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-sm text-neutral-600">
+          Re-lists the gateway's upstream provider models so a renamed model (for example a new
+          vLLM served-model-name) shows up in every user's model picker.
+        </p>
+        <Alert status="warning">
+          <Alert.Content>
+            <Alert.Description>
+              This then restarts <strong>every</strong> user's Hermes WebUI to drop its cached
+              model list. Open conversations may briefly reconnect.
+            </Alert.Description>
+          </Alert.Content>
+        </Alert>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModelsRefreshAlert({
+  result,
+  onDismiss,
+}: {
+  result: ModelsRefreshResult;
+  onDismiss: () => void;
+}) {
+  const failedProviders = result.providers.filter((p) => !p.ok);
+  const failedWebuis = result.webuis.filter((w) => !w.ok);
+  const webuiOk = result.webuis.length - failedWebuis.length;
+  const providerSummary = result.providers
+    .map((p) => `${p.provider}${p.ok ? "" : " (failed)"}`)
+    .join(", ");
+
+  return (
+    <Alert status={result.ok ? "success" : "warning"}>
+      <Alert.Content>
+        <Alert.Title>
+          {result.ok ? "Models refreshed" : "Models refresh completed with errors"}
+        </Alert.Title>
+        <Alert.Description>
+          <div className="space-y-1 text-sm">
+            <div>
+              Providers: {providerSummary || "none configured"}
+              {failedProviders.length > 0 && (
+                <span className="text-red-600">
+                  {" "}
+                  — {failedProviders.map((p) => p.error ?? p.provider).join("; ")}
+                </span>
+              )}
+            </div>
+            <div>Models in catalog: {result.models.length}</div>
+            <div>
+              WebUIs restarted: {webuiOk}/{result.webuis.length}
+              {failedWebuis.length > 0 && (
+                <span className="text-red-600">
+                  {" "}
+                  — {failedWebuis.map((w) => `${w.username}: ${w.error ?? "failed"}`).join("; ")}
+                </span>
+              )}
+            </div>
+          </div>
+        </Alert.Description>
+        <div className="mt-2">
+          <Button size="sm" variant="ghost" onPress={onDismiss}>
+            Dismiss
+          </Button>
+        </div>
+      </Alert.Content>
+    </Alert>
   );
 }
 
