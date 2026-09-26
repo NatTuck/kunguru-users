@@ -56,7 +56,7 @@ export function servicePort(service: SiteService, userId: number): number {
 
 // The DB stores the ssh address; nginx wants a literal. `localhost` (the app's
 // own host) becomes loopback so variable `proxy_pass` needs no resolver.
-function upstreamHost(sshTarget: string): string {
+export function upstreamHost(sshTarget: string): string {
   const t = sshTarget.trim();
   return t === "localhost" ? "127.0.0.1" : t;
 }

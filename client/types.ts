@@ -24,6 +24,16 @@ export interface AccountInfo {
   status: AccountStatus;
 }
 
+export interface SiteStatus {
+  up: boolean;
+}
+
+export interface AccountSites {
+  provisioned: boolean;
+  public: SiteStatus;
+  private: SiteStatus;
+}
+
 export interface AdminUser extends User {
   enabled: number;
   account: AccountInfo | null;

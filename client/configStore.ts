@@ -32,3 +32,15 @@ export function agentUrl(baseDomain: string, username: string): string | null {
   if (!baseDomain) return null;
   return `https://${username}-agent.users.${baseDomain}/`;
 }
+
+/** Public personal-app URL for a user, or null when the base domain is unset. */
+export function publicSiteUrl(baseDomain: string, username: string): string | null {
+  if (!baseDomain) return null;
+  return `https://${username}.${baseDomain}/`;
+}
+
+/** Private personal-app URL (session-gated), or null when unconfigured. */
+export function privateAppUrl(privateDomain: string, username: string): string | null {
+  if (!privateDomain) return null;
+  return `https://${username}.${privateDomain}/`;
+}

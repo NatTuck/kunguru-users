@@ -43,7 +43,13 @@ import {
   syncSnikketPassword,
   type ProvisionResult,
 } from "./provision";
-import { isProvisionableAliasLabel, isProvisionableUsername } from "./sites";
+import {
+  isProvisionableAliasLabel,
+  isProvisionableUsername,
+  servicePort,
+  upstreamHost,
+} from "./sites";
+import { tcpUp } from "./probe";
 import { reconcileUserSites } from "./nginx";
 import { refreshModelsAndRestartWebuis } from "./models";
 import { BASE_DOMAIN, PRIVATE_DOMAIN } from "./inventory";
@@ -253,6 +259,35 @@ api.get("/config", (_req, res) => {
     baseDomain: BASE_DOMAIN,
     privateDomain: PRIVATE_DOMAIN,
     xmppDomain: XMPP_DOMAIN,
+  });
+});
+
+// --- My personal apps (self) ---
+// Liveness of the signed-in user's public/private personal-app slots, for the
+// account page. TCP-only: it reports whether the tenant's own upstream is
+// listening on its slot port; the gateway route + TLS are managed separately by
+// reconcile. Short, bounded probes run concurrently.
+api.get("/me/sites", requireAuth, async (_req, res) => {
+  const userId = currentUserId(res);
+  if (userId == null) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const db = getDb();
+  const account = getAccountForUser(db, userId);
+  if (!BASE_DOMAIN || !account || !account.host.enabled) {
+    res.json({ provisioned: false, public: { up: false }, private: { up: false } });
+    return;
+  }
+  const host = upstreamHost(account.host.ssh_target);
+  const [publicUp, privateUp] = await Promise.all([
+    tcpUp(host, servicePort("public-site", userId)),
+    tcpUp(host, servicePort("private-app", userId)),
+  ]);
+  res.json({
+    provisioned: true,
+    public: { up: publicUp },
+    private: { up: privateUp },
   });
 });
 
