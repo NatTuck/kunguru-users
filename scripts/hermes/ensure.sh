@@ -41,6 +41,15 @@ venv_py="${home}/.hermes/hermes-agent/venv/bin/python"
 hermes_bin="${home}/.local/bin/hermes"
 installer_url="https://hermes-agent.nousresearch.com/install.sh"
 
+# Tenant site-deployment facts (consumed by the kunguru-sites skill). All
+# optional: a manual converge that omits them still installs the skill, with
+# references/local.md noting the values were not supplied.
+base_domain="${KUNGURU_BASE_DOMAIN:-}"
+user_id="${KUNGURU_USER_ID:-}"
+gateway_wg_ip="${KUNGURU_GATEWAY_WG_IP:-}"
+bind_addr="${KUNGURU_BIND_ADDR:-}"
+trusted_proxy="${KUNGURU_TRUSTED_PROXY:-}"
+
 # run_as_user CMD...: run as USERNAME with a clean but functional env, the
 # per-user systemd manager socket (XDG_RUNTIME_DIR) so systemctl --user works,
 # and cwd in the user's home (avoid tools walking up into e.g. kunguru's home).
@@ -259,6 +268,188 @@ chown "${USERNAME}" \
 chmod 0755 "${home}/.hermes/bin/hermes-xmpp-watchdog.sh"
 run_as_user 'systemctl --user daemon-reload'
 run_as_user 'systemctl --user enable --now hermes-xmpp-watchdog.timer' >/dev/null 2>&1 || true
+
+# --- tenant site-deployment skill (kunguru-sites) ---
+# The current hosting scheme: the gateway's nginx, TLS, and DNS are managed
+# centrally by the kunguru-users app, so a tenant only runs a web server on an
+# assigned slot port. This skill is authoritative and replaces the retired
+# "kunguru-nginx / ~/www / ~/sites" guidance; ship it to every tenant. The body
+# is embedded because the transport pipes a single script over stdin (same
+# reason the XMPP watchdog above is embedded).
+skill_dir="${home}/.hermes/skills/kunguru-custom/kunguru-sites"
+install -d -o "${USERNAME}" "${home}/.hermes/skills/kunguru-custom"
+install -d -o "${USERNAME}" "$skill_dir" "$skill_dir/references"
+cat > "$skill_dir/SKILL.md" <<'KUNGURU_SITES_SKILL'
+---
+name: kunguru-sites
+description: "Deploy and host web sites/apps for a kunguru tenant under the current multi-tenant scheme. The gateway nginx, TLS certificates, and DNS are managed centrally by the kunguru-users app; you run your app on the assigned slot port and it appears at <user>.<base> (public) or <user>.users.<base> (private, app-session gated). Also covers admin-mediated hostname aliases."
+version: 1.0.0
+author: Hermes Agent
+license: MIT
+platforms: [linux]
+metadata:
+  hermes:
+    tags: [kunguru, sites, hosting, deploy, nginx, reverse-proxy, public-site, private-app, alias, tls]
+    related_skills: [kunguru-operations]
+---
+
+# kunguru tenant site deployment (current scheme)
+
+This supersedes the old "kunguru-nginx / ~/www / ~/sites" deployment guidance.
+Under the current scheme a tenant never touches nginx, certbot, or DNS: you run
+your app on an assigned slot port and the gateway routes and secures it.
+
+## Read first
+
+`references/local.md` (same directory) lists YOUR hostnames, ports, bind address,
+and trusted-proxy address. Read it before deploying anything.
+
+## The model
+
+The gateway host runs nginx and the **kunguru-users** app. The app renders the
+per-user reverse-proxy routes and the combined TLS certificate from its database
+and a fixed port formula. Each tenant gets three fixed **slots**:
+
+| Slot | Hostname | Port | Access |
+|---|---|---|---|
+| public-site | `<user>.<base>` | 12000 + id | public, no auth |
+| private-app | `<user>.users.<base>` | 13000 + id | app session (auth_request) |
+| hermes-webui | `<user>-agent.users.<base>` | 11000 + id | app session (managed) |
+
+`<id>` is the tenant's numeric user id; see `references/local.md` for yours. All
+three slots are proxied over the VPN to your host, so a service bound to a slot
+port is reachable immediately.
+
+### Private slots inject identity
+
+For `<user>.users.<base>` (and private aliases), the gateway validates the
+`users.<base>` app-session cookie and forwards the owner's username as the
+header `Remote-User`. Your app should:
+
+- bind to the address in `references/local.md` (the VPN/LAN address the gateway
+  reaches), not just loopback;
+- trust `Remote-User` **only** when the TCP peer is the gateway's WG IP
+  (`references/local.md`); ignore it otherwise;
+- do **no** login of its own; the signed-in identity is `Remote-User`;
+- send unauthenticated users to `https://users.<base>/` to log in.
+
+For public slots, `Remote-User` is stripped (blank). Never trust it there.
+
+## Deploying a public site
+
+1. Put the code on your host (e.g. `~/.local/apps/<app>`).
+2. Run it bound to the public-site port from `references/local.md`.
+3. Open `https://<user>.<base>/`.
+
+## Deploying a private app
+
+Same as a public site, but bind the private-app port and read `Remote-User` for
+the signed-in user. Example (Express):
+
+```js
+// Substitute the trusted-proxy address from references/local.md.
+const GATEWAY_WG_IP = "10.0.0.1";
+app.use((req, res, next) => {
+  const peer = (req.socket.remoteAddress || "").replace("::ffff:", "");
+  req.user = peer === GATEWAY_WG_IP ? (req.get("Remote-User") || null) : null;
+  next();
+});
+```
+
+## Run under systemd --user
+
+Wrap the app in a user unit with `Restart=always`. Linger is already enabled, so
+it starts at boot.
+
+```
+# ~/.config/systemd/user/<app>.service
+[Unit]
+Description=<app>
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/.local/apps/<app>
+Environment=PORT=13000
+ExecStart=%h/.local/bin/node server.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now <app>
+```
+
+## TLS, certificates, DNS
+
+Automatic. The kunguru-users app reconciles the combined certificate (all tenant
+and alias hostnames) and the DNS wildcard already covers your labels. Do **not**
+run certbot, and do not create certificates yourself.
+
+## Aliases (extra hostnames) — admin-mediated
+
+Aliases are rows in the kunguru-users app, managed by an **admin**:
+
+- a **proxy** alias points at one of YOUR three slot services (`private-app`,
+  `public-site`, or `hermes-webui`);
+- a **static** alias serves a docroot on the **gateway** host, so it is not
+  usable from a tenant host.
+
+A public alias appears at `<label>.<base>`; a private alias at
+`<label>.users.<base>` (same session auth, owner = you). To get one, run your app
+on the target slot port and ask the operator to add `<label> -> <service>`. You
+cannot create aliases yourself.
+
+## Do NOT
+
+- Start, edit, or reload nginx; do not write under `/etc/nginx`.
+- Use `kunguru-nginx` (not installed on tenant hosts) or `sudo`.
+- Run `certbot` or manage certificates.
+- Serve sites from `~/www` or add per-site vhosts; that scheme is retired.
+
+## Verification and common statuses
+
+- Deploy, then `curl -sI https://<user>.<base>/` -> 200 (or the app's own code).
+- `502` at a slot host = the gateway route is fine but **nothing is listening**
+  on the slot port (your app is down or bound to the wrong port/address).
+- `404` = no route for that hostname (user disabled, or the label is not
+  configured as an alias).
+- A private host returns `302` to `https://users.<base>/login` when signed out —
+  that is the auth gate working; sign in and retry.
+KUNGURU_SITES_SKILL
+
+# Generated per-tenant facts so the skill body stays generic across tenants.
+if [[ -n "$base_domain" && "$user_id" =~ ^[0-9]+$ ]]; then
+  {
+    echo "# Your deployment (generated by scripts/hermes/ensure.sh)"
+    echo
+    echo "- Tenant: \`${USERNAME}\` (id ${user_id})"
+    echo "- Base domain: \`${base_domain}\`"
+    echo "- Login/logout: https://users.${base_domain}/"
+    echo "- Bind address: \`${bind_addr:-<the user-host VPN/LAN address>}\`"
+    echo "- Trust \`Remote-User\` only from: \`${trusted_proxy:-<the gateway WG IP>/32}\`"
+    echo
+    echo "| Hostname | Slot | Port | Access | Remote-User |"
+    echo "|---|---|---|---|---|"
+    echo "| ${USERNAME}.${base_domain} | public-site | $((12000 + user_id)) | public | blanked |"
+    echo "| ${USERNAME}.users.${base_domain} | private-app | $((13000 + user_id)) | app session | ${USERNAME} |"
+    echo "| ${USERNAME}-agent.users.${base_domain} | hermes-webui | $((11000 + user_id)) | app session | ${USERNAME} |"
+  } > "$skill_dir/references/local.md"
+else
+  cat > "$skill_dir/references/local.md" <<'KUNGURU_SITES_LOCAL'
+# Your deployment
+
+Hostnames and ports were not supplied to this converge (`KUNGURU_USER_ID` /
+`KUNGURU_BASE_DOMAIN` unset). Ask the operator for this tenant's three slot hosts
+and ports, or re-run the provision step from the kunguru-users app.
+KUNGURU_SITES_LOCAL
+fi
+chown -R "${USERNAME}" "${home}/.hermes/skills/kunguru-custom"
+echo "[ok] kunguru-sites skill installed for ${USERNAME}"
 
 sleep 3
 if run_as_user 'systemctl --user is-enabled hermes-gateway' >/dev/null 2>&1; then

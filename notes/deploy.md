@@ -159,3 +159,31 @@ Notes:
 - OMEMO is enabled via `XMPP_OMEMO_ENABLED=true` in the tenant's
   `~/.hermes/.env`; the agent publishes its device list on first connect.
 
+## Tenant site deployment (the `kunguru-sites` skill)
+
+Tenants must not touch nginx, certbot, or DNS. The gateway nginx is rendered
+centrally by `scripts/nginx/ensure-user-sites.sh` from the DB + a fixed port
+formula (`server/sites.ts`), so a tenant exposes a site simply by running a
+web server on the assigned **slot port** on their host:
+
+| Slot | Hostname | Port | Access |
+|---|---|---|---|
+| public-site | `<user>.<base>` | `12000 + id` | public |
+| private-app | `<user>.users.<base>` | `13000 + id` | app session |
+| hermes-webui | `<user>-agent.users.<base>` | `11000 + id` | app session |
+
+Private slots validate the `users.<base>` session cookie at the gateway and
+inject the owner as the trusted `Remote-User` header; the tenant app binds the
+address the gateway reaches and trusts that header only from the gateway's WG
+IP. Extra hostnames are admin-managed aliases (`aliases` table) pointing at one
+of the tenant's three slot services (or a gateway docroot for `static`).
+
+`scripts/hermes/ensure.sh` installs this contract into every tenant as the
+`kunguru-sites` skill under `~/.hermes/skills/kunguru-custom/`, embedding the
+skill body (the transport pipes a single script over stdin) and generating
+`references/local.md` from `KUNGURU_USER_ID`, `KUNGURU_BASE_DOMAIN`,
+`KUNGURU_GATEWAY_WG_IP`, `KUNGURU_BIND_ADDR`, and `KUNGURU_TRUSTED_PROXY`
+(passed by the `hermes` step in `server/provision.ts`). It supersedes the
+retired `kunguru-nginx` / `~/www` / `~/sites` guidance, which should be archived
+out of `~/.hermes/skills/` on tenants that still carry it.
+

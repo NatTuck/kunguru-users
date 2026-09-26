@@ -19,6 +19,7 @@ import {
   type User,
 } from "./db";
 import {
+  BASE_DOMAIN,
   GATEWAY_WG_IP,
   PORT_HERMES_WEBUI,
   PRIVATE_DOMAIN,
@@ -153,6 +154,17 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
           env.XMPP_HOME_CHANNEL = `${user.username}@${XMPP_DOMAIN}`;
           env.XMPP_HOST = XMPP_DOMAIN;
         }
+        // Tenant site-deployment facts for the kunguru-sites skill: the three
+        // slot hostnames/ports (12000/13000/11000 + id; see server/sites.ts)
+        // and the bind/trusted-proxy addresses for private slots.
+        env.KUNGURU_USER_ID = String(user.id);
+        if (BASE_DOMAIN) env.KUNGURU_BASE_DOMAIN = BASE_DOMAIN;
+        env.KUNGURU_GATEWAY_WG_IP = GATEWAY_WG_IP;
+        const coLocated = s.host.ssh_target === "localhost";
+        env.KUNGURU_BIND_ADDR = coLocated ? "127.0.0.1" : s.host.ssh_target;
+        env.KUNGURU_TRUSTED_PROXY = coLocated
+          ? "127.0.0.1/32"
+          : `${GATEWAY_WG_IP}/32`;
       }
       if (s.def.name === "webui") {
         // Per-user WebUI on `<user>-agent.users.<base>`: bound to the address
