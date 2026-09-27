@@ -36,9 +36,27 @@ if [[ -z "$domain" ]]; then
   exit 1
 fi
 
+# Prosody percent-encodes any character outside [A-Za-z0-9] in on-disk paths,
+# so the account file lives under the encoded domain and username
+# (chat.kunguru.net -> chat%2ekunguru%2enet, jeff-agent -> jeff%2dagent).
+percent_encode() {
+  local s="$1" out="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    if [[ "$c" =~ [A-Za-z0-9] ]]; then
+      out+="$c"
+    else
+      out+="$(printf '%%%02x' "'$c")"
+    fi
+  done
+  printf '%s' "$out"
+}
+
 # Account files live under Snikket's data volume (the default files backend):
-#   /snikket/prosody/<domain>/accounts/<user>.dat
-account_file="/snikket/prosody/${domain}/accounts/${SNIKKET_ACCOUNT_USERNAME}.dat"
+#   /snikket/prosody/<encoded-domain>/accounts/<encoded-user>.dat
+enc_domain="$(percent_encode "$domain")"
+enc_user="$(percent_encode "$SNIKKET_ACCOUNT_USERNAME")"
+account_file="/snikket/prosody/${enc_domain}/accounts/${enc_user}.dat"
 exists=0
 if docker exec "$container" test -f "$account_file" 2>/dev/null; then
   exists=1
