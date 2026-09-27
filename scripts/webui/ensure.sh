@@ -30,10 +30,36 @@ fi
 
 home="$(getent passwd "$USERNAME" | cut -d: -f6)"
 uid="$(id -u "$USERNAME")"
-venv_py="${home}/.hermes/hermes-agent/venv/bin/python"
 agent_dir="${home}/.hermes/hermes-agent"
 repo_dir="${home}/.local/apps/hermes-webui"
 unit="${home}/.config/systemd/user/hermes-webui.service"
+
+# hermes_python: the interpreter that carries the Hermes agent's dependencies.
+# Upstream moved from the legacy in-tree venv to a PM-managed generation
+# recorded in <HERMES_HOME>/installs/<key>/facts.json; fall back to the old
+# in-tree venv for installs that predate the change.
+hermes_python() {
+  local facts env py
+  for facts in "${home}/.hermes/installs"/*/facts.json; do
+    [[ -f "$facts" ]] || continue
+    env="$(python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print((d.get("packages", {}).get("venv", {}) or {}).get("environment") or "")
+except Exception:
+    print("")' "$facts" 2>/dev/null || true)"
+    if [[ -n "$env" && -x "${env}/bin/python" ]]; then
+      printf '%s' "${env}/bin/python"
+      return 0
+    fi
+  done
+  py="${agent_dir}/venv/bin/python"
+  if [[ -x "$py" ]]; then
+    printf '%s' "$py"
+    return 0
+  fi
+  return 1
+}
 
 # run_as_user CMD...: run as USERNAME with a clean env, the per-user systemd
 # manager socket, and cwd in the user's home.
@@ -64,8 +90,10 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 
-if [[ ! -x "$venv_py" ]]; then
-  echo "error: hermes agent venv python missing at ${venv_py} (run hermes/ensure.sh first)" >&2
+venv_py="$(hermes_python || true)"
+if [[ -z "$venv_py" || ! -x "$venv_py" ]]; then
+  echo "error: could not find a Python with the Hermes agent dependencies" >&2
+  echo "       (looked under ${home}/.hermes/installs and ${agent_dir}/venv; run hermes/ensure.sh first)" >&2
   exit 1
 fi
 
@@ -84,10 +112,15 @@ if [[ ! -f "${repo_dir}/server.py" ]]; then
   exit 1
 fi
 
-# --- deps: the agent venv already carries pyyaml/cryptography; top up via uv ---
-if [[ -x "${home}/.hermes/bin/uv" ]]; then
-  run_as_user "'${home}/.hermes/bin/uv' pip install --quiet --python '${venv_py}' -r '${repo_dir}/requirements.txt' >/dev/null 2>&1 || true"
-fi
+# --- deps: the agent environment already carries pyyaml/cryptography; top up ---
+# uv moved with the PM layout (was ~/.hermes/bin/uv, now a store tool), so try
+# both before giving up.
+for uv in "${home}/.hermes/bin/uv" "${home}/.hermes/tools"/*/uv; do
+  if [[ -x "$uv" ]]; then
+    run_as_user "'${uv}' pip install --quiet --python '${venv_py}' -r '${repo_dir}/requirements.txt' >/dev/null 2>&1 || true"
+    break
+  fi
+done
 
 # --- user systemd unit ---
 install -d "${home}/.config/systemd/user"

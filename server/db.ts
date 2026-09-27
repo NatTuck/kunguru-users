@@ -160,8 +160,22 @@ export function openDb(): Database.Database {
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
   migrate(db);
+  failStaleJobs(db);
   fixPermissions();
   return db;
+}
+
+// Job runs execute in-process; a restart means any row still marked "running"
+// will never finish. Mark them failed so polling observers terminate instead of
+// spinning forever on a dead job.
+function failStaleJobs(db: Database.Database): void {
+  const now = Date.now();
+  db.prepare(
+    "UPDATE jobs SET status = 'failed', finished_at = ? WHERE status = 'running'",
+  ).run(now);
+  db.prepare(
+    "UPDATE job_steps SET status = 'failed', finished_at = ? WHERE status = 'running'",
+  ).run(now);
 }
 
 // Additive migrations for databases created before a column existed.

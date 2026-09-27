@@ -12,6 +12,7 @@ import {
   getDb,
   getHostById,
   getHostByName,
+  getJob,
   setAccountStatus,
   setAccountVkId,
   type Host,
@@ -36,6 +37,7 @@ import {
   XMPP_DOMAIN,
 } from "./bifrost";
 import { runRemote } from "./transport/run";
+import { reconcileUserSites } from "./nginx";
 
 export const STANDARD_ACCOUNT_PROFILE = "standard-account";
 // Snikket-only password push (disable neutralizes XMPP; reset rotates the
@@ -92,11 +94,21 @@ function snikketHost(db: ReturnType<typeof getDb>): Host {
 
 interface RunJobOpts {
   user: Pick<User, "id" | "username">;
-  password: string;
+  // Tenant web/XMPP password. Omitted on a repair that only needs to converge
+  // the remaining steps: the tenant Snikket step then leaves an existing
+  // account's password untouched.
+  password?: string;
+  // Force the tenant Snikket step to (re)set the password even when the account
+  // already exists (explicit reset / enable after disable randomized it).
+  forceTenantPassword?: boolean;
   createdBy: number | null;
   profile: string;
   jobHostId: number;
   steps: StepRuntime[];
+  // When set, the job row was created up front (so a caller can return its id
+  // and poll it while the run executes in the background); otherwise runJob
+  // creates the row itself.
+  jobId?: number;
   // Hermes agent configuration (user-host step). LLM apiKey is the freshly
   // issued per-user Bifrost key; agent = the agent's own XMPP account, which
   // the tenant (allowed user) messages.
@@ -110,11 +122,13 @@ interface RunJobOpts {
 async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
   const db = getDb();
   const { user, password, createdBy, profile, jobHostId, steps } = opts;
-  const job = createJob(db, { hostId: jobHostId, profile, createdBy });
+  const jobId =
+    opts.jobId ??
+    createJob(db, { hostId: jobHostId, profile, createdBy }).id;
 
   const stepRows = steps.map((s, seq) =>
     createJobStep(db, {
-      jobId: job.id,
+      jobId,
       seq,
       script: s.def.scriptRel,
       targetHostId: s.host.id,
@@ -137,11 +151,17 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
       if (opts.action) env.HERMES_ACTION = opts.action;
       if (s.def.name === "snikket-account" || s.def.name === "snikket-password") {
         env.SNIKKET_ACCOUNT_USERNAME = user.username;
-        env.SNIKKET_ACCOUNT_PASSWORD = password;
+        if (password) env.SNIKKET_ACCOUNT_PASSWORD = password;
+        if (opts.forceTenantPassword || s.def.name === "snikket-password") {
+          env.SNIKKET_ACCOUNT_FORCE = "1";
+        }
       }
       if (s.def.name === "snikket-agent-account") {
         env.SNIKKET_ACCOUNT_USERNAME = opts.agent?.username ?? agentUsername(user.username);
-        env.SNIKKET_ACCOUNT_PASSWORD = opts.agent?.password ?? password;
+        env.SNIKKET_ACCOUNT_PASSWORD = opts.agent?.password ?? password ?? "";
+        // The agent's XMPP identity is internal; always converge it to the
+        // password Hermes is configured with in this run.
+        env.SNIKKET_ACCOUNT_FORCE = "1";
       }
       if (s.def.name === "hermes") {
         env.HERMES_LLM_BASE_URL = HERMES_LLM_BASE_URL;
@@ -182,12 +202,15 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         script,
         env,
         // hermes install/config pulls a python stack + browser the first time;
-        // the webui step clones the WebUI repo on first run.
+        // the webui step clones the WebUI repo on first run. Provisioning is a
+        // background job now, so give the first install generous headroom: an
+        // interrupted (timed-out) hermes install leaves a partial tree that
+        // looks "installed" but cannot run.
         timeoutMs:
           s.def.name === "hermes"
-            ? 900_000
+            ? 3_600_000
             : s.def.name === "webui"
-              ? 600_000
+              ? 900_000
               : 120_000,
       });
       exitCode = res.exitCode ?? 1;
@@ -202,11 +225,16 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
     if (!ok) {
       status = "failed";
       failedStep = s.def.name;
+      // An aborted job never runs the remaining steps; settle their rows so
+      // the UI shows "failed" instead of a spinner stuck on "running".
+      for (let j = i + 1; j < steps.length; j++) {
+        finishJobStep(db, stepRows[j].id, "failed", 1, "skipped: an earlier step failed");
+      }
       break;
     }
   }
-  finishJob(db, job.id, status);
-  return { jobId: job.id, status, failedStep };
+  finishJob(db, jobId, status);
+  return { jobId, status, failedStep };
 }
 
 function stepsFor(
@@ -225,17 +253,32 @@ async function issueVirtualKey(username: string) {
   return createVirtualKey({ name: username });
 }
 
+// Users with a standard-account run in flight (same process). Guards against a
+// double-submit starting a second run that would race the first over ssh.
+const inFlight = new Set<number>();
+
 /**
- * Linux account on the chosen host + Snikket account (shared password) + Hermes
- * agent (Bifrost LLM key, XMPP) for the user. A fresh virtual key is issued for
- * the run and persisted (id only) on success; the previous key is deactivated.
+ * Starts a standard-account profile (Linux account + Snikket tenant/agent +
+ * Hermes + WebUI) for the user on the chosen host and returns its job id
+ * immediately. The run continues in the background, updating the account
+ * status when it finishes; callers poll GET /api/jobs/:id for progress.
+ *
+ * The whole profile always runs: every step is an idempotent `ensure`, so an
+ * already-configured host is left alone and only missing pieces are completed.
+ * Repair passes no tenant password, so the tenant Snikket step leaves the
+ * existing password untouched; create/enable pass one (and enable forces it,
+ * since disable intentionally randomized the XMPP credential).
  */
-export async function provisionStandardAccount(opts: {
+export function startStandardAccountProvision(opts: {
   user: Pick<User, "id" | "username">;
   hostId: number;
-  password: string;
   createdBy: number | null;
-}): Promise<ProvisionResult> {
+  password?: string;
+  forceTenantPassword?: boolean;
+}): { jobId: number } {
+  if (inFlight.has(opts.user.id)) {
+    throw new Error("a provisioning run is already in progress for this user");
+  }
   const db = getDb();
   const target = getHostById(db, opts.hostId);
   if (!target || !target.enabled) throw new Error("target host not found or disabled");
@@ -244,32 +287,91 @@ export async function provisionStandardAccount(opts: {
   if (!account) account = createAccount(db, opts.user.id, target.id);
   const previousVkId = account.bifrost_vk_id;
 
-  const vk = await issueVirtualKey(opts.user.username);
-  const agentName = agentUsername(opts.user.username);
-  const agentPassword = generatePassword();
-
-  const result = await runJob({
-    ...opts,
+  const jobId = createJob(db, {
+    hostId: target.id,
     profile: STANDARD_ACCOUNT_PROFILE,
-    jobHostId: target.id,
-    steps: stepsFor(db, STANDARD_ACCOUNT_PROFILE, target),
-    llm: { apiKey: vk.value },
-    agent: { username: agentName, password: agentPassword },
-  });
+    createdBy: opts.createdBy,
+  }).id;
 
-  if (result.status === "succeeded") {
-    setAccountVkId(db, account.id, vk.id);
-    if (previousVkId) {
-      await setVirtualKeyActive(previousVkId, false).catch(() => undefined);
+  inFlight.add(opts.user.id);
+  void runStandardAccountProvision({
+    user: opts.user,
+    password: opts.password,
+    forceTenantPassword: opts.forceTenantPassword,
+    createdBy: opts.createdBy,
+    target,
+    accountId: account.id,
+    previousVkId,
+    jobId,
+    steps: stepsFor(db, STANDARD_ACCOUNT_PROFILE, target),
+  }).finally(() => inFlight.delete(opts.user.id));
+
+  return { jobId };
+}
+
+/**
+ * Background body of a standard-account run. Never throws: an unexpected
+ * failure marks the (pre-created) job failed so polling observers terminate,
+ * and the account failed so the UI offers Repair.
+ */
+async function runStandardAccountProvision(opts: {
+  user: Pick<User, "id" | "username">;
+  password?: string;
+  forceTenantPassword?: boolean;
+  createdBy: number | null;
+  target: Host;
+  accountId: number;
+  previousVkId: string | null;
+  jobId: number;
+  steps: StepRuntime[];
+}): Promise<void> {
+  const db = getDb();
+  let vk: { id: string; value: string } | null = null;
+  try {
+    vk = await issueVirtualKey(opts.user.username);
+    const result = await runJob({
+      user: opts.user,
+      password: opts.password,
+      forceTenantPassword: opts.forceTenantPassword,
+      createdBy: opts.createdBy,
+      profile: STANDARD_ACCOUNT_PROFILE,
+      jobHostId: opts.target.id,
+      jobId: opts.jobId,
+      steps: opts.steps,
+      llm: { apiKey: vk.value },
+      agent: {
+        username: agentUsername(opts.user.username),
+        password: generatePassword(),
+      },
+    });
+
+    if (result.status === "succeeded") {
+      setAccountVkId(db, opts.accountId, vk.id);
+      if (opts.previousVkId) {
+        await setVirtualKeyActive(opts.previousVkId, false).catch(() => undefined);
+      }
+      setAccountStatus(db, opts.accountId, "active", result.jobId);
+    } else {
+      // The fresh key was never used by a successful run; remove it so failed
+      // provisions do not leave deactivated orphans behind.
+      await deleteVirtualKey(vk.id).catch(() => undefined);
+      setAccountStatus(db, opts.accountId, "failed", result.jobId);
     }
-    setAccountStatus(db, account.id, "active", result.jobId);
-  } else {
-    // The fresh key was never used by a successful run; remove it so failed
-    // provisions do not leave deactivated orphans behind.
-    await deleteVirtualKey(vk.id).catch(() => undefined);
-    setAccountStatus(db, account.id, "failed", result.jobId);
+  } catch (err) {
+    if (vk) await deleteVirtualKey(vk.id).catch(() => undefined);
+    const job = getJob(db, opts.jobId);
+    if (job?.status === "running") finishJob(db, opts.jobId, "failed");
+    setAccountStatus(db, opts.accountId, "failed", opts.jobId);
+    console.error(`provision job ${opts.jobId} failed:`, err);
   }
-  return result;
+
+  // Per-user site routes are derived from DB state; reconcile after every run
+  // so a new/updated account's hostnames appear. Failure is not fatal.
+  try {
+    await reconcileUserSites();
+  } catch (err) {
+    console.error(`site reconcile after job ${opts.jobId} failed:`, err);
+  }
 }
 
 /**

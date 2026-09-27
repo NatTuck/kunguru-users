@@ -27,6 +27,7 @@ interface UsersState {
   sendMessage: (id: number, message: string) => Promise<MessageResult | null>;
   refreshModels: () => Promise<ModelsRefreshResult | null>;
   job: (id: number) => Promise<JobDetail>;
+  watchJob: (jobId: number) => void;
   clearReveal: () => void;
   clearActionError: () => void;
 }
@@ -40,7 +41,32 @@ async function refreshUsers(set: (p: Partial<UsersState>) => void) {
   if (data) set({ users: data.users });
 }
 
-export const useUsersStore = create<UsersState>((set) => ({
+// Polling handle for the currently watched background provisioning job.
+let jobPoll: ReturnType<typeof setTimeout> | null = null;
+
+function stopJobPoll() {
+  if (jobPoll) {
+    clearTimeout(jobPoll);
+    jobPoll = null;
+  }
+}
+
+interface SubmitResult {
+  user: AdminUser;
+  password: string;
+  jobId: number | null;
+  message?: string;
+}
+
+// A background job's initial (still running) provisioning view, or the
+// immediate failure when the server could not even start one.
+function pendingProvision(data: SubmitResult): ProvisionInfo {
+  return data.jobId != null
+    ? { ok: false, jobId: data.jobId, status: "running" }
+    : { ok: false, jobId: null, message: data.message };
+}
+
+export const useUsersStore = create<UsersState>((set, getState) => ({
   users: [],
   loading: false,
   listError: null,
@@ -64,20 +90,17 @@ export const useUsersStore = create<UsersState>((set) => ({
   create: async (username, role, hostId) => {
     set({ busy: true, actionError: null });
     try {
-      const data = await post<{
-        user: AdminUser;
-        password: string;
-        provisioning: ProvisionInfo | null;
-      }>("/api/users", { username, role, hostId });
+      const data = await post<SubmitResult>("/api/users", { username, role, hostId });
       set({
         busy: false,
         reveal: {
           user: data.user,
           password: data.password,
           kind: "create",
-          provisioning: data.provisioning,
+          provisioning: pendingProvision(data),
         },
       });
+      if (data.jobId != null) getState().watchJob(data.jobId);
       await refreshUsers(set);
     } catch (err) {
       set({
@@ -114,20 +137,17 @@ export const useUsersStore = create<UsersState>((set) => ({
   enable: async (id) => {
     set({ busy: true, actionError: null });
     try {
-      const data = await post<{
-        user: AdminUser;
-        password: string;
-        provisioning: ProvisionInfo | null;
-      }>(`/api/users/${id}/enable`);
+      const data = await post<SubmitResult>(`/api/users/${id}/enable`);
       set({
         busy: false,
         reveal: {
           user: data.user,
           password: data.password,
           kind: "enable",
-          provisioning: data.provisioning,
+          provisioning: pendingProvision(data),
         },
       });
+      if (data.jobId != null) getState().watchJob(data.jobId);
       await refreshUsers(set);
     } catch (err) {
       set({ busy: false, actionError: await msg(err, "failed to enable user") });
@@ -160,20 +180,17 @@ export const useUsersStore = create<UsersState>((set) => ({
   provision: async (id, hostId) => {
     set({ busy: true, actionError: null });
     try {
-      const data = await post<{
-        user: AdminUser;
-        password: string;
-        provisioning: ProvisionInfo | null;
-      }>(`/api/users/${id}/provision`, { hostId });
+      const data = await post<SubmitResult>(`/api/users/${id}/provision`, { hostId });
       set({
         busy: false,
         reveal: {
           user: data.user,
           password: data.password,
           kind: "provision",
-          provisioning: data.provisioning,
+          provisioning: pendingProvision(data),
         },
       });
+      if (data.jobId != null) getState().watchJob(data.jobId);
       await refreshUsers(set);
     } catch (err) {
       set({ busy: false, actionError: await msg(err, "failed to provision user") });
@@ -207,6 +224,59 @@ export const useUsersStore = create<UsersState>((set) => ({
   },
 
   job: async (id) => get<JobDetail>(`/api/jobs/${id}`),
+
+  // Poll a background provisioning job to completion, mirroring its status
+  // into the open reveal modal and refreshing the user list (account status)
+  // once it finishes. Keeps running if the modal is dismissed so the list
+  // still updates.
+  watchJob: (jobId) => {
+    stopJobPoll();
+    const tick = async () => {
+      let detail: JobDetail;
+      try {
+        detail = await get<JobDetail>(`/api/jobs/${jobId}`);
+      } catch {
+        jobPoll = setTimeout(() => void tick(), 3000);
+        return;
+      }
+      if (detail.job.status === "running") {
+        set((s) =>
+          s.reveal?.provisioning?.jobId === jobId
+            ? { reveal: { ...s.reveal, provisioning: { ok: false, jobId, status: "running" } } }
+            : {},
+        );
+        jobPoll = setTimeout(() => void tick(), 2000);
+        return;
+      }
+      const failed = detail.steps.find((st) => st.status === "failed");
+      const ok = detail.job.status === "succeeded";
+      const tail = (failed?.output_log ?? "")
+        .split("\n")
+        .filter((line) => line.trim())
+        .slice(-4)
+        .join("\n")
+        .slice(-600);
+      set((s) =>
+        s.reveal?.provisioning?.jobId === jobId
+          ? {
+              reveal: {
+                ...s.reveal,
+                provisioning: {
+                  ok,
+                  jobId,
+                  status: detail.job.status,
+                  failedStep: failed?.script,
+                  message: ok ? undefined : tail || "provisioning did not fully succeed",
+                },
+              },
+            }
+          : {},
+      );
+      await refreshUsers(set);
+      jobPoll = null;
+    };
+    void tick();
+  },
 
   clearReveal: () => set({ reveal: null }),
   clearActionError: () => set({ actionError: null }),

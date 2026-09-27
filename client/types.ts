@@ -78,7 +78,7 @@ export interface ModelsRefreshResult {
 
 export interface PasswordReveal {
   user: User;
-  password: string;
+  password?: string;
   kind: "create" | "reset" | "provision" | "enable";
   provisioning?: ProvisionInfo | null;
 }

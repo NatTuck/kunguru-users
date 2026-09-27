@@ -38,8 +38,8 @@ import {
 } from "./auth";
 import {
   deactivateUserAccess,
-  provisionStandardAccount,
   sendAgentXmppMessage,
+  startStandardAccountProvision,
   syncSnikketPassword,
   type ProvisionResult,
 } from "./provision";
@@ -354,44 +354,38 @@ api.post("/users", requireAuth, requireAdmin, async (req, res) => {
       res.status(201).json({
         user,
         password,
-        provisioning: {
-          ok: false,
-          jobId: null,
-          message: "target host not found or disabled; use 'Provision' once a host is available",
-        },
+        jobId: null,
+        message: "target host not found or disabled; use 'Provision' once a host is available",
       });
       return;
     }
     try {
-      const result = await provisionStandardAccount({
+      // Provisioning can take minutes; run it in the background and let the
+      // client poll the job. The account row exists immediately (status
+      // "pending") so the user shows up with a Repair action.
+      const { jobId } = startStandardAccountProvision({
         user: { id: user.id, username: user.username },
         hostId: targetHostId,
         password,
+        // Create sets a fresh shared password; force it so web and XMPP cannot
+        // drift even if a Snikket account with this name somehow already exists.
+        forceTenantPassword: true,
         createdBy: currentUserId(res) ?? null,
       });
-      const sites = await reconcileSitesSafe();
-      res.status(201).json({
-        user,
-        password,
-        provisioning: toProvisionView(result),
-        sites,
-      });
+      res.status(202).json({ user, password, jobId });
       return;
     } catch (err) {
       res.status(201).json({
         user,
         password,
-        provisioning: {
-          ok: false,
-          jobId: null,
-          message: err instanceof Error ? err.message : "provisioning failed",
-        },
+        jobId: null,
+        message: err instanceof Error ? err.message : "provisioning failed",
       });
       return;
     }
   }
 
-  res.status(201).json({ user, password, provisioning: null });
+  res.status(201).json({ user, password, jobId: null });
 });
 
 api.patch("/users/:id/role", requireAuth, requireAdmin, (req, res) => {
@@ -522,32 +516,31 @@ api.post("/users/:id/enable", requireAuth, requireAdmin, async (req, res) => {
   updateUserPasswordHash(db, id, await hashPassword(password));
   setUserEnabled(db, id, true);
 
-  let provisioning: unknown = null;
+  let jobId: number | null = null;
+  let message: string | undefined;
   const account = getAccountForUser(db, id);
   if (account) {
     try {
-      const result = await provisionStandardAccount({
+      ({ jobId } = startStandardAccountProvision({
         user: { id: target.id, username: target.username },
         hostId: account.host_id,
         password,
+        // Disable randomized the XMPP credential, so enable must re-set it.
+        forceTenantPassword: true,
         createdBy: currentUserId(res) ?? null,
-      });
-      provisioning = toProvisionView(result);
+      }));
     } catch (err) {
-      provisioning = {
-        ok: false,
-        message: err instanceof Error ? err.message : "snikket password sync failed",
-      };
+      message = err instanceof Error ? err.message : "provisioning failed";
     }
+  } else {
+    message = "user has no provisioned account; use Provision";
   }
-
-  const sites = await reconcileSitesSafe();
 
   res.json({
     user: { id: target.id, username: target.username, role: target.role, enabled: 1 },
     password,
-    provisioning,
-    sites,
+    jobId,
+    message,
   });
 });
 
@@ -581,26 +574,22 @@ api.post("/users/:id/provision", requireAuth, requireAdmin, async (req, res) => 
     return;
   }
 
-  const password = generatePassword();
-  await updateUserPasswordHash(db, id, await hashPassword(password));
   try {
-    const result = await provisionStandardAccount({
+    // Repair re-runs the whole idempotent profile. No password is passed, so
+    // the tenant's existing web/XMPP password is left untouched: the Snikket
+    // step only converges missing pieces.
+    const { jobId } = startStandardAccountProvision({
       user: { id: target.id, username: target.username },
       hostId: targetHostId,
-      password,
       createdBy: currentUserId(res) ?? null,
     });
-    const sites = await reconcileSitesSafe();
     res.json({
       user: { id: target.id, username: target.username },
-      password,
-      provisioning: toProvisionView(result),
-      sites,
+      jobId,
     });
   } catch (err) {
     res.status(500).json({
       error: err instanceof Error ? err.message : "provisioning failed",
-      password,
     });
   }
 });

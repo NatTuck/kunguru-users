@@ -37,7 +37,6 @@ fi
 
 home="$(getent passwd "$USERNAME" | cut -d: -f6)"
 uid="$(id -u "$USERNAME")"
-venv_py="${home}/.hermes/hermes-agent/venv/bin/python"
 hermes_bin="${home}/.local/bin/hermes"
 installer_url="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -62,6 +61,51 @@ run_as_user() {
     bash -c "cd '${home}' && $1"
 }
 
+# hermes_usable: the published launcher actually runs (its dependency
+# environment is committed). Upstream replaced the old in-tree venv with a
+# PM-managed environment, so a launcher-presence check is no longer proof of a
+# complete install.
+hermes_usable() {
+  run_as_user "${hermes_bin} --version" >/dev/null 2>&1
+}
+
+# hermes_python: interpreter carrying the agent's dependencies (PM generation
+# recorded in <HERMES_HOME>/installs/<key>/facts.json, else the legacy venv).
+hermes_python() {
+  local facts env py
+  for facts in "${home}/.hermes/installs"/*/facts.json; do
+    [[ -f "$facts" ]] || continue
+    env="$(python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print((d.get("packages", {}).get("venv", {}) or {}).get("environment") or "")
+except Exception:
+    print("")' "$facts" 2>/dev/null || true)"
+    if [[ -n "$env" && -x "${env}/bin/python" ]]; then
+      printf '%s' "${env}/bin/python"
+      return 0
+    fi
+  done
+  py="${home}/.hermes/hermes-agent/venv/bin/python"
+  if [[ -x "$py" ]]; then
+    printf '%s' "$py"
+    return 0
+  fi
+  return 1
+}
+
+# hermes_uv: PM's staged uv (moved from ~/.hermes/bin/uv), else the legacy path.
+hermes_uv() {
+  local uv
+  for uv in "${home}/.hermes/bin/uv" "${home}/.hermes/tools"/*/uv; do
+    if [[ -x "$uv" ]]; then
+      printf '%s' "$uv"
+      return 0
+    fi
+  done
+  return 1
+}
+
 if [[ "$action" == "stop" ]]; then
   echo "[ok] stopping hermes gateway for ${USERNAME}"
   run_as_user 'systemctl --user disable --now hermes-xmpp-watchdog.timer >/dev/null 2>&1 || true'
@@ -76,17 +120,23 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 
-# --- install if absent ---
-if [[ ! -x "${venv_py}" && ! -x "${hermes_bin}" ]]; then
-  echo "[changed] installing hermes-agent for ${USERNAME} (first run takes a while)"
-  run_as_user "cd '${home}' && curl -fsSL '${installer_url}' | bash"
+# --- install or repair ---
+# The upstream installer is idempotent and staged, but an interrupted first
+# install (timeout, dropped network) can leave the launcher present while the
+# dependency environment is missing. Re-run the installer whenever the launcher
+# is absent OR does not run, so a repair converges instead of failing a stale
+# path check forever.
+if [[ ! -x "${hermes_bin}" ]] || ! hermes_usable; then
+  echo "[changed] installing/repairing hermes-agent for ${USERNAME} (first run takes a while)"
+  run_as_user "cd '${home}' && curl -fsSL '${installer_url}' | bash" || true
 fi
 if [[ ! -x "${hermes_bin}" ]]; then
   echo "error: hermes launcher missing at ${hermes_bin} after install" >&2
   exit 1
 fi
-if [[ ! -x "${venv_py}" ]]; then
-  echo "error: hermes venv python missing at ${venv_py}" >&2
+if ! hermes_usable; then
+  echo "error: hermes launcher at ${hermes_bin} is present but does not run (install incomplete?)" >&2
+  echo "       see ${home}/.hermes/logs/install.log" >&2
   exit 1
 fi
 
@@ -166,8 +216,17 @@ else
   run_as_user "git -C '${plugin_dir}' fetch --depth 1 origin main >/dev/null 2>&1 && git -C '${plugin_dir}' reset --hard FETCH_HEAD >/dev/null 2>&1 || true"
 fi
 # Plugin deps, including the optional OMEMO end-to-end encryption stack
-# (slixmpp-omemo/omemo); harmless if already present.
-run_as_user "'${home}/.hermes/bin/uv' pip install --quiet --python '${venv_py}' -r '${plugin_dir}/requirements.txt' slixmpp-omemo omemo"
+# (slixmpp-omemo/omemo); harmless if already present. Best-effort: a missing
+# uv/python (or a PM-managed environment that declines the extra install) must
+# not fail the whole hermes step.
+plugin_py="$(hermes_python || true)"
+plugin_uv="$(hermes_uv || true)"
+if [[ -n "$plugin_py" && -n "$plugin_uv" ]]; then
+  run_as_user "'${plugin_uv}' pip install --quiet --python '${plugin_py}' -r '${plugin_dir}/requirements.txt' slixmpp-omemo omemo" \
+    || echo "warning: hermes-xmpp-plugin dependencies did not install; continuing" >&2
+else
+  echo "warning: could not locate hermes python/uv to install plugin deps; continuing" >&2
+fi
 run_as_user 'hermes config set plugins.enabled '"'"'["hermes-xmpp-plugin"]'"'"' >/dev/null'
 
 # --- enable OMEMO whenever the XMPP platform is configured ---

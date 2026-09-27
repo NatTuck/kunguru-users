@@ -577,11 +577,26 @@ function RevealModal({
   return (
     <ModalShell open onClose={onClose} title={title} width="sm:max-w-[440px]">
       <div className="space-y-4">
-        <p className="text-sm text-neutral-600">
-          Password for <strong>{reveal.user.username}</strong> — shown only once:
-        </p>
-        <Mono>{reveal.password}</Mono>
-        {prov?.ok ? (
+        {reveal.password ? (
+          <>
+            <p className="text-sm text-neutral-600">
+              Password for <strong>{reveal.user.username}</strong> — shown only once:
+            </p>
+            <Mono>{reveal.password}</Mono>
+          </>
+        ) : (
+          <p className="text-sm text-neutral-600">
+            Password for <strong>{reveal.user.username}</strong> unchanged — the existing
+            password still works.
+          </p>
+        )}
+        {prov?.status === "running" ? (
+          <div className="flex items-center gap-2 text-sm text-neutral-600">
+            <Spinner size="sm" />
+            Provisioning Linux + XMPP + Hermes… this can take several minutes and
+            continues in the background if you close this.
+          </div>
+        ) : prov?.ok ? (
           <Alert status="success">
             <Alert.Content>
               <Alert.Description>Provisioning succeeded (Linux + XMPP).</Alert.Description>
@@ -593,24 +608,30 @@ function RevealModal({
               <Alert.Title>Provisioning did not fully succeed</Alert.Title>
               <Alert.Description>
                 {prov.failedStep ? `Failed at step "${prov.failedStep}". ` : ""}
-                {prov.message ? `${prov.message} ` : ""}
                 The Linux/XMPP accounts may be partially applied; use Repair once things are
                 reachable.
+                {prov.message ? (
+                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-white/60 p-2 font-mono text-xs">
+                    {prov.message}
+                  </pre>
+                ) : null}
               </Alert.Description>
             </Alert.Content>
           </Alert>
         ) : null}
         <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="primary"
-            onPress={() => {
-              void navigator.clipboard.writeText(reveal.password);
-              setCopied(true);
-            }}
-          >
-            {copied ? "Copied" : "Copy password"}
-          </Button>
+          {reveal.password && (
+            <Button
+              size="sm"
+              variant="primary"
+              onPress={() => {
+                void navigator.clipboard.writeText(reveal.password as string);
+                setCopied(true);
+              }}
+            >
+              {copied ? "Copied" : "Copy password"}
+            </Button>
+          )}
           {prov?.jobId != null && (
             <Button size="sm" variant="outline" onPress={() => onViewJob(prov.jobId as number)}>
               View log
@@ -659,8 +680,8 @@ function ProvisionModal({
           <Alert status="warning">
             <Alert.Content>
               <Alert.Description>
-                Re-provisioning rotates the password (the old value is not retained), then
-                re-applies the Linux + XMPP accounts.
+                Repair re-runs setup on the selected machine, completing only what is
+                missing. Accounts and the current password are left unchanged.
               </Alert.Description>
             </Alert.Content>
           </Alert>
