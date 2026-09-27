@@ -18,6 +18,7 @@ interface UsersState {
   actionError: string | null;
   reveal: PasswordReveal | null;
   load: () => Promise<void>;
+  refresh: () => Promise<void>;
   create: (username: string, role: Role, hostId: number) => Promise<void>;
   setRole: (id: number, role: Role) => Promise<void>;
   disable: (id: number) => Promise<void>;
@@ -85,6 +86,12 @@ export const useUsersStore = create<UsersState>((set, getState) => ({
         listError: err instanceof ApiError ? err.message : "failed to load users",
       });
     }
+  },
+
+  // Silent list refresh (no full-page loading state), for polling while a
+  // provisioning job is in flight.
+  refresh: async () => {
+    await refreshUsers(set);
   },
 
   create: async (username, role, hostId) => {

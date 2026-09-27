@@ -41,6 +41,7 @@ export default function UsersPage() {
     actionError,
     reveal,
     load,
+    refresh,
     create,
     setRole,
     disable,
@@ -63,7 +64,7 @@ export default function UsersPage() {
   const [confirmReset, setConfirmReset] = useState<number | null>(null);
   const [provisionFor, setProvisionFor] = useState<AdminUser | null>(null);
   const [provisionHost, setProvisionHost] = useState<string | null>(null);
-  const [jobOpen, setJobOpen] = useState<JobDetail | null>(null);
+  const [jobOpen, setJobOpen] = useState<number | null>(null);
   const [aliasesFor, setAliasesFor] = useState<AdminUser | null>(null);
   const [messageFor, setMessageFor] = useState<AdminUser | null>(null);
   const [confirmRefresh, setConfirmRefresh] = useState(false);
@@ -78,6 +79,26 @@ export default function UsersPage() {
   useEffect(() => {
     if (hostKey == null && hosts.length > 0) setHostKey(hosts[0].id);
   }, [hosts, hostKey]);
+
+  // While any account is still provisioning, quietly re-fetch the list so its
+  // status (and the Repair/Provision affordance) updates without a reload.
+  // Stops as soon as nothing is pending.
+  const anyPending = users.some((u) => u.account?.status === "pending");
+  useEffect(() => {
+    if (!anyPending) return;
+    const id = setInterval(() => void refresh(), 4000);
+    return () => clearInterval(id);
+  }, [anyPending, refresh]);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const doRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const provisionable = (u: AdminUser) => !u.account || u.account.status !== "active";
 
@@ -99,13 +120,28 @@ export default function UsersPage() {
             account on Snikket, sharing one password.
           </p>
         </div>
-        <Button
-          variant="outline"
-          isDisabled={busy}
-          onPress={() => setConfirmRefresh(true)}
-        >
-          Refresh models &amp; WebUIs
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            isDisabled={busy || refreshing}
+            onPress={() => void doRefresh()}
+          >
+            {refreshing ? (
+              <span className="inline-flex items-center gap-2">
+                <Spinner size="sm" /> Refreshing…
+              </span>
+            ) : (
+              "Refresh"
+            )}
+          </Button>
+          <Button
+            variant="outline"
+            isDisabled={busy}
+            onPress={() => setConfirmRefresh(true)}
+          >
+            Refresh models &amp; WebUIs
+          </Button>
+        </div>
       </div>
 
       {actionError && (
@@ -263,13 +299,7 @@ export default function UsersPage() {
         <RevealModal
           reveal={reveal}
           onClose={clearReveal}
-          onViewJob={(id) => {
-            void useUsersStore
-              .getState()
-              .job(id)
-              .then(setJobOpen)
-              .catch(() => setJobOpen(null));
-          }}
+          onViewJob={(id) => setJobOpen(id)}
         />
       )}
       {provisionFor && (
@@ -287,8 +317,8 @@ export default function UsersPage() {
           }}
         />
       )}
-      {jobOpen && (
-        <JobLogModal detail={jobOpen} onClose={() => setJobOpen(null)} />
+      {jobOpen != null && (
+        <JobLogModal jobId={jobOpen} onClose={() => setJobOpen(null)} />
       )}
       {aliasesFor && (
         <AliasesModal user={aliasesFor} onClose={() => setAliasesFor(null)} />
@@ -593,8 +623,9 @@ function RevealModal({
         {prov?.status === "running" ? (
           <div className="flex items-center gap-2 text-sm text-neutral-600">
             <Spinner size="sm" />
-            Provisioning Linux + XMPP + Hermes… this can take several minutes and
-            continues in the background if you close this.
+            Provisioning Linux + XMPP + Hermes… this can take several minutes. It keeps
+            running if you close this, and updates automatically here and in the user list.
+            Use <strong>View log</strong> for live step output.
           </div>
         ) : prov?.ok ? (
           <Alert status="success">
@@ -711,16 +742,117 @@ function ProvisionModal({
   );
 }
 
-function JobLogModal({ detail, onClose }: { detail: JobDetail; onClose: () => void }) {
+function JobLogModal({ jobId, onClose }: { jobId: number; onClose: () => void }) {
+  const job = useUsersStore((s) => s.job);
+  const [detail, setDetail] = useState<JobDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+
+  // Fetch on open, then poll every 2s while the job is still running. A step's
+  // output only lands in the DB when it finishes, so a running step shows a
+  // placeholder until then.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const fetchOnce = async () => {
+      try {
+        const d = await job(jobId);
+        if (cancelled) return null;
+        setDetail(d);
+        setUpdatedAt(new Date());
+        setError(null);
+        return d;
+      } catch {
+        if (!cancelled) setError("failed to load job log");
+        return null;
+      }
+    };
+    const tick = async () => {
+      const d = await fetchOnce();
+      if (cancelled || !d || d.job.status !== "running") return;
+      timer = setTimeout(() => void tick(), 2000);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [job, jobId]);
+
+  const refreshNow = async () => {
+    setRefreshing(true);
+    try {
+      const d = await job(jobId);
+      setDetail(d);
+      setUpdatedAt(new Date());
+      setError(null);
+    } catch {
+      setError("failed to load job log");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const running = detail?.job.status === "running";
+  const jobTone =
+    detail?.job.status === "succeeded"
+      ? "success"
+      : detail?.job.status === "running"
+        ? "warning"
+        : "danger";
+
   return (
-    <ModalShell open onClose={onClose} title={`Job #${detail.job.id} — ${detail.job.profile}`} width="sm:max-w-[720px]">
+    <ModalShell
+      open
+      onClose={onClose}
+      title={detail ? `Job #${detail.job.id} — ${detail.job.profile}` : `Job #${jobId}`}
+      width="sm:max-w-[720px]"
+    >
       <div className="space-y-3">
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-neutral-500">Host:</span>
-          <span>{detail.job.host_name ?? "—"}</span>
-          <StatusChip label={detail.job.status} tone={detail.job.status === "succeeded" ? "success" : "danger"} />
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-neutral-500">Host:</span>
+            <span>{detail?.job.host_name ?? "—"}</span>
+            {detail && <StatusChip label={detail.job.status} tone={jobTone} />}
+          </div>
+          <div className="flex items-center gap-2 text-neutral-500">
+            {running && (
+              <span className="inline-flex items-center gap-1.5">
+                <Spinner size="sm" /> Updates automatically
+              </span>
+            )}
+            {updatedAt && (
+              <span className="text-xs">
+                {running ? "live · " : ""}updated {updatedAt.toLocaleTimeString()}
+              </span>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              isDisabled={refreshing}
+              onPress={() => void refreshNow()}
+            >
+              {refreshing ? "Refreshing…" : "Refresh"}
+            </Button>
+          </div>
         </div>
-        {detail.steps.map((s) => (
+
+        {error && (
+          <Alert status="danger">
+            <Alert.Content>
+              <Alert.Description>{error}</Alert.Description>
+            </Alert.Content>
+          </Alert>
+        )}
+
+        {!detail && !error && (
+          <div className="flex items-center gap-2 text-neutral-500">
+            <Spinner size="sm" /> Loading job log…
+          </div>
+        )}
+
+        {detail?.steps.map((s) => (
           <div key={s.id} className="rounded-xl border border-neutral-200 bg-neutral-50 p-3">
             <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
               <span className="font-medium">
@@ -728,14 +860,23 @@ function JobLogModal({ detail, onClose }: { detail: JobDetail; onClose: () => vo
               </span>
               <StatusChip
                 label={s.status}
-                tone={s.status === "succeeded" ? "success" : "danger"}
+                tone={
+                  s.status === "succeeded"
+                    ? "success"
+                    : s.status === "running"
+                      ? "warning"
+                      : "danger"
+                }
               />
               {s.exit_code != null && (
                 <span className="text-neutral-400">exit {s.exit_code}</span>
               )}
             </div>
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-white p-3 font-mono text-xs">
-              {s.output_log || "(no output)"}
+              {s.output_log ||
+                (s.status === "running"
+                  ? "(running — output appears when the step finishes)"
+                  : "(no output)")}
             </pre>
           </div>
         ))}
