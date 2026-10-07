@@ -117,7 +117,18 @@ function currentUserId(res: {
 interface ModelView {
   current: string | null;
   default: string;
-  models: { name: string; provider: string }[];
+  models: { id: string; name: string; provider: string }[];
+}
+
+// Hermes model ids are `provider/name` (e.g. `kimi/k3`), while the Bifrost
+// catalog reports those two fields separately. Map to the id agents actually
+// use, and keep only providers the per-user key is scoped to.
+function allowedModels(
+  catalog: { name: string; provider: string }[],
+): { id: string; name: string; provider: string }[] {
+  return catalog
+    .filter((m) => BIFROST_PROVIDERS.includes(m.provider))
+    .map((m) => ({ id: `${m.provider}/${m.name}`, name: m.name, provider: m.provider }));
 }
 
 async function modelViewFor(
@@ -129,7 +140,7 @@ async function modelViewFor(
   return {
     current: account?.hermes_model ?? null,
     default: HERMES_MODEL,
-    models: catalog.filter((m) => BIFROST_PROVIDERS.includes(m.provider)),
+    models: allowedModels(catalog),
   };
 }
 
@@ -156,8 +167,12 @@ async function setModelFor(
     });
     return;
   }
-  if (!catalog.some((m) => m.name === picked)) {
+  if (!catalog.some((m) => `${m.provider}/${m.name}` === picked)) {
     res.status(400).json({ error: "unknown model" });
+    return;
+  }
+  if (!allowedModels(catalog).some((m) => m.id === picked)) {
+    res.status(400).json({ error: "model is not available for this account" });
     return;
   }
   try {

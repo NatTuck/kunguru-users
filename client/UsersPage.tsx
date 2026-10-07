@@ -1291,8 +1291,8 @@ function ModelModal({
             <Select.Popover>
               <ListBox>
                 {info.models.map((m) => (
-                  <ListBox.Item key={m.name} id={m.name} textValue={m.name}>
-                    {m.name}
+                  <ListBox.Item key={m.id} id={m.id} textValue={m.id}>
+                    {m.id}
                   </ListBox.Item>
                 ))}
               </ListBox>
