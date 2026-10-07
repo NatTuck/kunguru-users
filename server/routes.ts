@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import {
   countAdmins,
   createAlias,
@@ -41,6 +41,7 @@ import {
   sendAgentXmppMessage,
   startStandardAccountProvision,
   syncSnikketPassword,
+  applyUserModel,
   type ProvisionResult,
 } from "./provision";
 import {
@@ -53,7 +54,12 @@ import { tcpUp } from "./probe";
 import { reconcileUserSites } from "./nginx";
 import { refreshModelsAndRestartWebuis } from "./models";
 import { BASE_DOMAIN, PRIVATE_DOMAIN } from "./inventory";
-import { XMPP_DOMAIN } from "./bifrost";
+import {
+  BIFROST_PROVIDERS,
+  HERMES_MODEL,
+  listCatalogModels,
+  XMPP_DOMAIN,
+} from "./bifrost";
 
 export const api = Router();
 
@@ -101,6 +107,74 @@ function currentUserId(res: {
   locals: { session?: { user: { id: number } } };
 }): number | undefined {
   return res.locals.session?.user.id;
+}
+
+// --- Default model (Bifrost catalog) ---
+// A tenant's Hermes default model is a Bifrost `<provider>/<name>` id. The
+// catalog is read server-side with the gateway's admin credentials; tenants
+// only see models from the providers their per-user key is scoped to.
+
+interface ModelView {
+  current: string | null;
+  default: string;
+  models: { name: string; provider: string }[];
+}
+
+async function modelViewFor(
+  db: ReturnType<typeof getDb>,
+  userId: number,
+): Promise<ModelView> {
+  const account = getAccountForUser(db, userId);
+  const catalog = await listCatalogModels();
+  return {
+    current: account?.hermes_model ?? null,
+    default: HERMES_MODEL,
+    models: catalog.filter((m) => BIFROST_PROVIDERS.includes(m.provider)),
+  };
+}
+
+// Validates the picked model against the live gateway catalog, then applies it
+// (rewrites the tenant's model.default and restarts the agent gateway + WebUI).
+async function setModelFor(
+  res: Response,
+  target: { id: number; username: string },
+  model: unknown,
+  createdBy: number | null,
+): Promise<void> {
+  if (typeof model !== "string" || !model.trim()) {
+    res.status(400).json({ error: "model is required" });
+    return;
+  }
+  const picked = model.trim();
+  let catalog;
+  try {
+    catalog = await listCatalogModels();
+  } catch (err) {
+    res.status(502).json({
+      error: "could not read the gateway model catalog",
+      message: err instanceof Error ? err.message : undefined,
+    });
+    return;
+  }
+  if (!catalog.some((m) => m.name === picked)) {
+    res.status(400).json({ error: "unknown model" });
+    return;
+  }
+  try {
+    const result = await applyUserModel({ user: target, model: picked, createdBy });
+    const ok = result.status === "succeeded";
+    res.status(ok ? 200 : 502).json({
+      ok,
+      jobId: result.jobId,
+      status: result.status,
+      failedStep: result.failedStep,
+      current: ok ? picked : undefined,
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : "failed to set model",
+    });
+  }
 }
 
 // --- Auth ---
@@ -289,6 +363,41 @@ api.get("/me/sites", requireAuth, async (_req, res) => {
     public: { up: publicUp },
     private: { up: privateUp },
   });
+});
+
+// --- My default model (self) ---
+// The signed-in user's Hermes default model plus the gateway catalog to choose
+// from. Applying restarts their agent gateway + WebUI.
+api.get("/me/model", requireAuth, async (_req, res) => {
+  const userId = currentUserId(res);
+  if (userId == null) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  try {
+    res.json(await modelViewFor(getDb(), userId));
+  } catch (err) {
+    res.status(502).json({
+      error: "could not read the gateway model catalog",
+      message: err instanceof Error ? err.message : undefined,
+    });
+  }
+});
+
+api.post("/me/model", requireAuth, async (req, res) => {
+  const userId = currentUserId(res);
+  if (userId == null) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const db = getDb();
+  const user = getUserById(db, userId);
+  if (!user) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const { model } = (req.body ?? {}) as { model?: unknown };
+  await setModelFor(res, { id: user.id, username: user.username }, model, userId);
 });
 
 // --- Hosts (admin) ---
@@ -704,6 +813,52 @@ api.post("/models/refresh", requireAuth, requireAdmin, async (_req, res) => {
       error: err instanceof Error ? err.message : "failed to refresh models",
     });
   }
+});
+
+// --- Per-user default model (admin) ---
+// Lets an admin set any tenant's Hermes default model. Mirrors the self-service
+// /me/model routes; applying restarts that tenant's agent gateway + WebUI.
+
+api.get("/users/:id/model", requireAuth, requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const db = getDb();
+  if (!getUserById(db, id)) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  try {
+    res.json(await modelViewFor(db, id));
+  } catch (err) {
+    res.status(502).json({
+      error: "could not read the gateway model catalog",
+      message: err instanceof Error ? err.message : undefined,
+    });
+  }
+});
+
+api.post("/users/:id/model", requireAuth, requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const db = getDb();
+  const target = getUserById(db, id);
+  if (!target) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  const { model } = (req.body ?? {}) as { model?: unknown };
+  await setModelFor(
+    res,
+    { id: target.id, username: target.username },
+    model,
+    currentUserId(res) ?? null,
+  );
 });
 
 // --- Job audit trail (admin) ---

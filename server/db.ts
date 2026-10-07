@@ -52,6 +52,9 @@ export interface Account {
   status: AccountStatus;
   last_job_id: number | null;
   bifrost_vk_id: string | null;
+  // Per-tenant default Hermes model (Bifrost `provider/name`). NULL falls back
+  // to the instance-wide HERMES_MODEL; set when the user picks one in the UI.
+  hermes_model: string | null;
 }
 
 export interface JobRow {
@@ -135,6 +138,7 @@ export const SCHEMA = `
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'failed')),
     last_job_id INTEGER REFERENCES jobs(id),
     bifrost_vk_id TEXT,
+    hermes_model TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (user_id, host_id)
   );
@@ -187,6 +191,9 @@ function migrate(db: Database.Database): void {
   const acols = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
   if (!acols.some((c) => c.name === "bifrost_vk_id")) {
     db.exec("ALTER TABLE accounts ADD COLUMN bifrost_vk_id TEXT");
+  }
+  if (!acols.some((c) => c.name === "hermes_model")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN hermes_model TEXT");
   }
 }
 
@@ -558,6 +565,7 @@ export function createAccount(
     status: "pending",
     last_job_id: null,
     bifrost_vk_id: null,
+    hermes_model: null,
   };
 }
 
@@ -580,6 +588,14 @@ export function setAccountVkId(
   vkId: string | null,
 ): void {
   db.prepare("UPDATE accounts SET bifrost_vk_id = ? WHERE id = ?").run(vkId, accountId);
+}
+
+export function setAccountModel(
+  db: Database.Database,
+  accountId: number,
+  model: string | null,
+): void {
+  db.prepare("UPDATE accounts SET hermes_model = ? WHERE id = ?").run(model, accountId);
 }
 
 export function getAccountByUserHost(

@@ -13,6 +13,7 @@ import {
   getHostById,
   getHostByName,
   getJob,
+  setAccountModel,
   setAccountStatus,
   setAccountVkId,
   type Host,
@@ -43,6 +44,8 @@ export const STANDARD_ACCOUNT_PROFILE = "standard-account";
 // Snikket-only password push (disable neutralizes XMPP; reset rotates the
 // tenant web/XMPP password -- the Hermes agent has its own account).
 export const PASSWORD_SYNC_PROFILE = "password-sync";
+// Switch a tenant's default model and restart the agent gateway + WebUI.
+export const MODEL_SET_PROFILE = "model-set";
 
 type StepTarget = "user-host" | "snikket-host";
 
@@ -72,6 +75,9 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
   ],
   [PASSWORD_SYNC_PROFILE]: [
     { name: "snikket-password", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
+  ],
+  [MODEL_SET_PROFILE]: [
+    { name: "hermes-model", scriptRel: "hermes/set-model.sh", target: "user-host" },
   ],
 };
 
@@ -114,6 +120,9 @@ interface RunJobOpts {
   // the tenant (allowed user) messages.
   llm?: { apiKey: string };
   agent?: { username: string; password: string };
+  // Per-tenant default Hermes model. Omitted falls back to the instance-wide
+  // HERMES_MODEL. Only consumed by the `hermes` and `hermes-model` steps.
+  model?: string;
   // Optional extra env exported to every step (e.g. HERMES_ACTION=stop).
   action?: string;
 }
@@ -165,7 +174,7 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
       }
       if (s.def.name === "hermes") {
         env.HERMES_LLM_BASE_URL = HERMES_LLM_BASE_URL;
-        env.HERMES_MODEL = HERMES_MODEL;
+        env.HERMES_MODEL = opts.model ?? HERMES_MODEL;
         if (opts.llm?.apiKey) env.HERMES_LLM_API_KEY = opts.llm.apiKey;
         if (opts.agent) {
           env.XMPP_JID = `${opts.agent.username}@${XMPP_DOMAIN}`;
@@ -185,6 +194,9 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         env.KUNGURU_TRUSTED_PROXY = coLocated
           ? "127.0.0.1/32"
           : `${GATEWAY_WG_IP}/32`;
+      }
+      if (s.def.name === "hermes-model") {
+        env.HERMES_MODEL = opts.model ?? HERMES_MODEL;
       }
       if (s.def.name === "webui") {
         // Per-user WebUI on `<user>-agent.users.<base>`: bound to the address
@@ -302,6 +314,7 @@ export function startStandardAccountProvision(opts: {
     target,
     accountId: account.id,
     previousVkId,
+    model: account.hermes_model ?? undefined,
     jobId,
     steps: stepsFor(db, STANDARD_ACCOUNT_PROFILE, target),
   }).finally(() => inFlight.delete(opts.user.id));
@@ -322,6 +335,7 @@ async function runStandardAccountProvision(opts: {
   target: Host;
   accountId: number;
   previousVkId: string | null;
+  model?: string;
   jobId: number;
   steps: StepRuntime[];
 }): Promise<void> {
@@ -338,6 +352,7 @@ async function runStandardAccountProvision(opts: {
       jobHostId: opts.target.id,
       jobId: opts.jobId,
       steps: opts.steps,
+      model: opts.model,
       llm: { apiKey: vk.value },
       agent: {
         username: agentUsername(opts.user.username),
@@ -419,6 +434,82 @@ export async function syncSnikketPassword(opts: {
     host,
   }));
   return runJob({ ...opts, profile: PASSWORD_SYNC_PROFILE, jobHostId: host.id, steps });
+}
+
+/**
+ * Best-effort restart of a tenant's Hermes WebUI so it drops its cached model
+ * catalog. Failures are logged only: the model change (and its persistence)
+ * must not be undone by a WebUI hiccup.
+ */
+async function restartWebui(
+  user: Pick<User, "username">,
+  host: Host,
+): Promise<void> {
+  let script: string;
+  try {
+    script = await readFile(join(SCRIPTS_DIR, "webui/restart.sh"), "utf8");
+  } catch {
+    return;
+  }
+  const res = await runRemote({
+    sshUser: SSH_USER,
+    sshTarget: host.ssh_target,
+    script,
+    env: { USERNAME: user.username },
+    timeoutMs: 60_000,
+  });
+  if (res.exitCode !== 0) {
+    console.error(`webui restart for ${user.username} failed: ${res.output.trim()}`);
+  }
+}
+
+/**
+ * Switches a provisioned tenant's default Hermes model (a Bifrost
+ * `provider/name` id) and restarts their agent gateway + WebUI so the change
+ * takes effect. Runs inline and records an audit job; the account's stored
+ * model is updated only on success, so a failed run leaves the previous choice
+ * intact (a later Repair also re-applies the stored value).
+ */
+export async function applyUserModel(opts: {
+  user: Pick<User, "id" | "username">;
+  model: string;
+  createdBy: number | null;
+}): Promise<ProvisionResult> {
+  if (inFlight.has(opts.user.id)) {
+    throw new Error("a provisioning run is already in progress for this user");
+  }
+  const db = getDb();
+  const account = getAccountForUser(db, opts.user.id);
+  if (!account) throw new Error("user has no provisioned account");
+  if (account.status !== "active") {
+    throw new Error("account is not active; provision it first");
+  }
+
+  const steps: StepRuntime[] = PROFILES[MODEL_SET_PROFILE].map((def) => ({
+    def,
+    host: account.host,
+  }));
+
+  inFlight.add(opts.user.id);
+  try {
+    const result = await runJob({
+      user: opts.user,
+      createdBy: opts.createdBy,
+      profile: MODEL_SET_PROFILE,
+      jobHostId: account.host_id,
+      steps,
+      model: opts.model,
+    });
+    if (result.status === "succeeded") {
+      setAccountModel(db, account.id, opts.model);
+      // Drop the WebUI's cached catalog too; a failure here does not undo the
+      // model change or block persistence.
+      await restartWebui(opts.user, account.host);
+    }
+    return result;
+  } finally {
+    inFlight.delete(opts.user.id);
+  }
 }
 
 /**

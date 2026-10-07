@@ -24,6 +24,7 @@ import type {
   Host,
   JobDetail,
   MessageResult,
+  ModelInfo,
   ModelsRefreshResult,
   PasswordReveal,
   Role,
@@ -67,6 +68,7 @@ export default function UsersPage() {
   const [jobOpen, setJobOpen] = useState<number | null>(null);
   const [aliasesFor, setAliasesFor] = useState<AdminUser | null>(null);
   const [messageFor, setMessageFor] = useState<AdminUser | null>(null);
+  const [modelFor, setModelFor] = useState<AdminUser | null>(null);
   const [confirmRefresh, setConfirmRefresh] = useState(false);
   const [modelsResult, setModelsResult] = useState<ModelsRefreshResult | null>(null);
 
@@ -286,6 +288,7 @@ export default function UsersPage() {
                       }}
                       onAliases={() => setAliasesFor(u)}
                       onMessage={() => setMessageFor(u)}
+                      onModel={() => setModelFor(u)}
                     />
                   ))}
                 </Table.Body>
@@ -325,6 +328,9 @@ export default function UsersPage() {
       )}
       {messageFor && (
         <MessageModal user={messageFor} onClose={() => setMessageFor(null)} />
+      )}
+      {modelFor && (
+        <ModelModal user={modelFor} onClose={() => setModelFor(null)} />
       )}
       {confirmRefresh && (
         <RefreshModelsModal
@@ -458,6 +464,7 @@ function UserRow({
   onProvision,
   onAliases,
   onMessage,
+  onModel,
 }: {
   user: AdminUser;
   meId?: number;
@@ -476,10 +483,12 @@ function UserRow({
   onProvision: () => void;
   onAliases: () => void;
   onMessage: () => void;
+  onModel: () => void;
 }) {
   const isSelf = meId === u.id;
   const disabled = !u.enabled;
   const canMessage = !disabled && u.account?.status === "active";
+  const canModel = !disabled && u.account?.status === "active";
   return (
     <Table.Row>
       <Table.Cell>
@@ -551,6 +560,11 @@ function UserRow({
             {canMessage && (
               <Button size="sm" variant="outline" isDisabled={busy} onPress={onMessage}>
                 Message
+              </Button>
+            )}
+            {canModel && (
+              <Button size="sm" variant="outline" isDisabled={busy} onPress={onModel}>
+                Model
               </Button>
             )}
             {canProvision && (
@@ -1155,6 +1169,142 @@ function MessageModal({
               </Alert.Content>
             </Alert>
           ))}
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModelModal({
+  user: u,
+  onClose,
+}: {
+  user: AdminUser;
+  onClose: () => void;
+}) {
+  const [info, setInfo] = useState<ModelInfo | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const load = async () => {
+    setError(null);
+    try {
+      const d = await get<ModelInfo>(`/api/users/${u.id}/model`);
+      setInfo(d);
+      setSelected(d.current ?? d.default);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "failed to load the model catalog");
+    }
+  };
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [u.id]);
+
+  const active = info ? info.current ?? info.default : null;
+  const dirty = info != null && selected != null && selected !== active;
+
+  const apply = async () => {
+    if (selected == null) return;
+    setBusy(true);
+    setError(null);
+    setDone(false);
+    try {
+      const d = await post<{ ok: boolean; current?: string; failedStep?: string }>(
+        `/api/users/${u.id}/model`,
+        { model: selected },
+      );
+      if (!d.ok) throw new Error(d.failedStep ? `step failed: ${d.failedStep}` : "apply failed");
+      setDone(true);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "failed to set model");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <ModalShell
+      open
+      onClose={onClose}
+      title={`Default model — ${u.username}`}
+      width="sm:max-w-[520px]"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="tertiary" onPress={onClose}>
+            Close
+          </Button>
+          <Button
+            variant="primary"
+            isDisabled={busy || !dirty || selected == null}
+            onPress={() => void apply()}
+          >
+            {busy ? (
+              <span className="inline-flex items-center gap-2">
+                <Spinner size="sm" /> Applying…
+              </span>
+            ) : (
+              "Apply & restart"
+            )}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-600">
+          Sets this tenant's agent default model and restarts their gateway and WebUI.
+        </p>
+
+        {error && (
+          <Alert status="danger">
+            <Alert.Content>
+              <Alert.Description>{error}</Alert.Description>
+            </Alert.Content>
+          </Alert>
+        )}
+        {done && (
+          <Alert status="success">
+            <Alert.Content>
+              <Alert.Description>Model applied. The agent was restarted.</Alert.Description>
+            </Alert.Content>
+          </Alert>
+        )}
+
+        {info == null && !error ? (
+          <Spinner size="sm" />
+        ) : info && info.models.length === 0 ? (
+          <p className="text-sm text-neutral-500">No models are available.</p>
+        ) : info ? (
+          <Select
+            value={selected}
+            onChange={(v) => setSelected(v == null ? null : String(v))}
+            placeholder="Choose a model"
+          >
+            <Label>Default model</Label>
+            <Select.Trigger>
+              <Select.Value />
+              <Select.Indicator />
+            </Select.Trigger>
+            <Select.Popover>
+              <ListBox>
+                {info.models.map((m) => (
+                  <ListBox.Item key={m.name} id={m.name} textValue={m.name}>
+                    {m.name}
+                  </ListBox.Item>
+                ))}
+              </ListBox>
+            </Select.Popover>
+          </Select>
+        ) : null}
+
+        {active && (
+          <p className="text-xs text-neutral-500">
+            Current: <Mono>{active}</Mono>
+          </p>
+        )}
       </div>
     </ModalShell>
   );

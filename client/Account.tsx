@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { Alert, Button, Card, Input, Spinner } from "@heroui/react";
+import { Alert, Button, Card, Input, Label, ListBox, Select, Spinner } from "@heroui/react";
 import { Link } from "react-router-dom";
 import { useCurrentUser } from "./guards";
 import { useAuthStore } from "./authStore";
@@ -11,6 +11,7 @@ import {
   useConfigStore,
 } from "./configStore";
 import { useSitesStore } from "./sitesStore";
+import { useModelStore } from "./modelStore";
 import { StatusChip } from "./ui";
 
 export default function Account() {
@@ -74,6 +75,9 @@ export default function Account() {
         />
       </div>
 
+      <h2 className="mt-10 mb-4 text-2xl font-semibold tracking-tight">Agent model</h2>
+      <ModelCard />
+
       <h2 className="mt-10 mb-4 text-2xl font-semibold tracking-tight">My account</h2>
       <Card className="p-6">
         <dl className="space-y-3">
@@ -104,6 +108,119 @@ export default function Account() {
       <h2 className="mt-10 mb-4 text-2xl font-semibold tracking-tight">Change password</h2>
       <ChangePasswordCard />
     </div>
+  );
+}
+
+// Default provider/model picker. The model id is a Bifrost `provider/name`
+// value; applying it rewrites the agent's model.default and restarts its
+// gateway + WebUI, so it can take a few seconds.
+function ModelCard() {
+  const info = useModelStore((s) => s.info);
+  const loading = useModelStore((s) => s.loading);
+  const loadError = useModelStore((s) => s.loadError);
+  const applying = useModelStore((s) => s.applying);
+  const actionError = useModelStore((s) => s.actionError);
+  const applied = useModelStore((s) => s.applied);
+  const load = useModelStore((s) => s.load);
+  const apply = useModelStore((s) => s.apply);
+  const clearApplied = useModelStore((s) => s.clearApplied);
+
+  const [selected, setSelected] = useState<string | null>(null);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (info && selected == null) setSelected(info.current ?? info.default);
+  }, [info, selected]);
+
+  const active = info ? info.current ?? info.default : null;
+  const dirty = info != null && selected != null && selected !== active;
+
+  return (
+    <Card className="p-6">
+      <p className="text-sm text-neutral-500">
+        The default model your agent uses. Applying a change restarts your agent gateway and
+        web interface.
+      </p>
+
+      {loading ? (
+        <div className="mt-4 flex items-center gap-2 text-neutral-500">
+          <Spinner size="sm" /> Loading models…
+        </div>
+      ) : loadError ? (
+        <Alert status="danger" className="mt-4">
+          <Alert.Content>
+            <Alert.Description>{loadError}</Alert.Description>
+          </Alert.Content>
+        </Alert>
+      ) : info ? (
+        <div className="mt-4 flex flex-col gap-4">
+          {info.models.length === 0 ? (
+            <p className="text-sm text-neutral-500">No models are available yet.</p>
+          ) : (
+            <Select
+              className="max-w-md"
+              value={selected}
+              onChange={(v) => setSelected(v == null ? null : String(v))}
+              placeholder="Choose a model"
+            >
+              <Label>Default model</Label>
+              <Select.Trigger>
+                <Select.Value />
+                <Select.Indicator />
+              </Select.Trigger>
+              <Select.Popover>
+                <ListBox>
+                  {info.models.map((m) => (
+                    <ListBox.Item key={m.name} id={m.name} textValue={m.name}>
+                      {m.name}
+                    </ListBox.Item>
+                  ))}
+                </ListBox>
+              </Select.Popover>
+            </Select>
+          )}
+
+          {(actionError || applied) && (
+            <Alert status={actionError ? "danger" : "success"}>
+              <Alert.Content>
+                <Alert.Description>
+                  {actionError ?? `Default model set to ${applied}. Your agent was restarted.`}
+                </Alert.Description>
+              </Alert.Content>
+            </Alert>
+          )}
+
+          <div className="flex items-center gap-3">
+            <Button
+              variant="primary"
+              isDisabled={applying || !dirty || selected == null}
+              onPress={() => void apply(selected as string)}
+            >
+              {applying ? (
+                <span className="inline-flex items-center gap-2">
+                  <Spinner size="sm" /> Applying…
+                </span>
+              ) : (
+                "Apply & restart"
+              )}
+            </Button>
+            {active && (
+              <span className="text-xs text-neutral-500">
+                Current: <span className="font-mono">{active}</span>
+              </span>
+            )}
+            {applied && (
+              <Button size="sm" variant="ghost" onPress={clearApplied}>
+                Dismiss
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </Card>
   );
 }
 

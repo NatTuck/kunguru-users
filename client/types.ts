@@ -57,6 +57,12 @@ export interface CatalogModel {
   provider: string;
 }
 
+export interface ModelInfo {
+  current: string | null;
+  default: string;
+  models: CatalogModel[];
+}
+
 export interface ProviderRefreshResult {
   provider: string;
   ok: boolean;
