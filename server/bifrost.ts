@@ -146,7 +146,12 @@ export async function refreshProviderModels(provider: string): Promise<void> {
 
 /** Lists the models Bifrost's catalog currently exposes (as `provider/model`). */
 export async function listCatalogModels(): Promise<CatalogModel[]> {
-  const data = await api<{ models?: CatalogModel[] }>("GET", "/api/models");
+  // Bifrost paginates /api/models with a default page size of 5, which silently
+  // truncates the catalog (and so the app's model pickers). Ask for all of them.
+  const data = await api<{ models?: CatalogModel[] }>(
+    "GET",
+    "/api/models?limit=1000",
+  );
   return data?.models ?? [];
 }
 
