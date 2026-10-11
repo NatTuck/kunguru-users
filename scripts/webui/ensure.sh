@@ -13,6 +13,9 @@
 # Env:
 #   USERNAME (required)          HERMES_ACTION (ensure | stop; default ensure)
 #   WEBUI_PORT (required)        WEBUI_HOST (bind address; default 127.0.0.1)
+#   WEBUI_DEFAULT_MODEL          default LLM for new WebUI chats (Bifrost
+#                                `provider/name`); exported to the WebUI as
+#                                HERMES_WEBUI_DEFAULT_MODEL
 #   WEBUI_TRUSTED_PROXIES        WEBUI_LOGOUT_URL (both optional)
 set -euo pipefail
 
@@ -82,6 +85,7 @@ fi
 webui_host="${WEBUI_HOST:-127.0.0.1}"
 webui_proxies="${WEBUI_TRUSTED_PROXIES:-127.0.0.1/32}"
 logout_url="${WEBUI_LOGOUT_URL:-}"
+webui_default_model="${WEBUI_DEFAULT_MODEL:-}"
 
 # --- lingering user manager (webui must survive logout/reboot) ---
 loginctl enable-linger "$USERNAME"
@@ -142,6 +146,7 @@ Environment=HERMES_WEBUI_PORT=${WEBUI_PORT}
 Environment=HERMES_WEBUI_TRUSTED_AUTH_HEADER=Remote-User
 Environment=HERMES_WEBUI_TRUSTED_PROXY_CIDRS=${webui_proxies}
 Environment=HERMES_WEBUI_TRUSTED_AUTH_LOGOUT_URL=${logout_url}
+Environment=HERMES_WEBUI_DEFAULT_MODEL=${webui_default_model}
 ExecStart=${venv_py} ${repo_dir}/server.py
 Restart=always
 RestartSec=5

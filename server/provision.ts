@@ -206,6 +206,11 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         env.WEBUI_PORT = String(PORT_HERMES_WEBUI + user.id);
         env.WEBUI_HOST = coLocated ? "127.0.0.1" : s.host.ssh_target;
         env.WEBUI_TRUSTED_PROXIES = coLocated ? "127.0.0.1/32" : `${GATEWAY_WG_IP}/32`;
+        // The WebUI keeps its own model selection (per session + browser), so it
+        // does not follow the agent's model.default. Export the account's model
+        // as HERMES_WEBUI_DEFAULT_MODEL or the WebUI would stay on the
+        // instance-wide default.
+        env.WEBUI_DEFAULT_MODEL = opts.model ?? HERMES_MODEL;
         if (PRIVATE_DOMAIN) env.WEBUI_LOGOUT_URL = `https://${PRIVATE_DOMAIN}/`;
       }
       const res = await runRemote({
@@ -437,13 +442,16 @@ export async function syncSnikketPassword(opts: {
 }
 
 /**
- * Best-effort restart of a tenant's Hermes WebUI so it drops its cached model
- * catalog. Failures are logged only: the model change (and its persistence)
- * must not be undone by a WebUI hiccup.
+ * Best-effort restart of a tenant's Hermes WebUI. When `model` is given it also
+ * drops the tenant's cached model catalog, persists the new default and
+ * repoints existing WebUI sessions (the WebUI resolves its own per-session
+ * model ahead of the configured default). Failures are logged only: the model
+ * change (and its persistence) must not be undone by a WebUI hiccup.
  */
 async function restartWebui(
   user: Pick<User, "username">,
   host: Host,
+  model: string,
 ): Promise<void> {
   let script: string;
   try {
@@ -455,7 +463,7 @@ async function restartWebui(
     sshUser: SSH_USER,
     sshTarget: host.ssh_target,
     script,
-    env: { USERNAME: user.username },
+    env: { USERNAME: user.username, WEBUI_DEFAULT_MODEL: model },
     timeoutMs: 60_000,
   });
   if (res.exitCode !== 0) {
@@ -502,9 +510,9 @@ export async function applyUserModel(opts: {
     });
     if (result.status === "succeeded") {
       setAccountModel(db, account.id, opts.model);
-      // Drop the WebUI's cached catalog too; a failure here does not undo the
-      // model change or block persistence.
-      await restartWebui(opts.user, account.host);
+      // Drop the WebUI's cached catalog and repoint its sessions too; a failure
+      // here does not undo the model change or block persistence.
+      await restartWebui(opts.user, account.host, opts.model);
     }
     return result;
   } finally {

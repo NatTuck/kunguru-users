@@ -6,6 +6,9 @@
 #   * install the agent under ~/.hermes if absent (official installer)
 #   * point it at the LLM gateway (Bifrost): model.provider custom + base URL +
 #     default model, and store the per-user virtual key (env HERMES_LLM_API_KEY)
+#   * restrict the WebUI model picker to configured providers
+#     (providers.only_configured) so auto-detected providers -- keyless
+#     opencode-free, ambient provider keys -- do not clutter every tenant
 #   * if XMPP creds are supplied, merge XMPP_* into ~/.hermes/.env and enable
 #     the hermes-xmpp-plugin so the tenant can chat with their agent over the
 #     Snikket account they were provisioned
@@ -151,6 +154,12 @@ fi
 # --- model / provider config (LLM gateway) ---
 if [[ -n "${HERMES_LLM_BASE_URL:-}" ]]; then
   run_as_user "hermes config set model.provider custom >/dev/null && hermes config set model.base_url '${HERMES_LLM_BASE_URL}' >/dev/null"
+  # The WebUI model picker auto-detects every provider it can reach from the
+  # host (keyless opencode-free, ambient provider keys, ...) and ignores the
+  # agent's providers.<id>.enabled flag. only_configured keeps the picker to the
+  # active provider plus explicitly configured ones, so a tenant sees the
+  # Bifrost gateway rather than a pile of unrelated providers.
+  run_as_user "hermes config set providers.only_configured true >/dev/null"
 fi
 if [[ -n "${HERMES_MODEL:-}" ]]; then
   run_as_user "hermes config set model.default '${HERMES_MODEL}' >/dev/null"
