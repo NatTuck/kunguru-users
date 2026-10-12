@@ -9,6 +9,8 @@
 #   * restrict the WebUI model picker to configured providers
 #     (providers.only_configured) so auto-detected providers -- keyless
 #     opencode-free, ambient provider keys -- do not clutter every tenant
+#   * HERMES_UPDATE=1 (or HERMES_ACTION=update) also brings the WebUI checkout
+#     to its latest release and restarts it, keeping agent + WebUI in lockstep
 #   * if XMPP creds are supplied, merge XMPP_* into ~/.hermes/.env and enable
 #     the hermes-xmpp-plugin so the tenant can chat with their agent over the
 #     Snikket account they were provisioned
@@ -149,6 +151,30 @@ fi
 if [[ "${HERMES_UPDATE:-0}" == "1" || "$action" == "update" ]]; then
   echo "[changed] updating hermes-agent for ${USERNAME}"
   run_as_user 'hermes update --yes' || echo "warning: 'hermes update' failed; continuing" >&2
+
+  # Keep the WebUI checkout in lockstep with the agent. The agent relaunches the
+  # WebUI through an isolated runpy shim that does NOT put the WebUI's own
+  # directory on sys.path, so an old WebUI paired with a new agent can fail at
+  # import time (ModuleNotFoundError: api). Update the checkout, refresh its
+  # dependencies, and restart it so one update keeps both at the same release.
+  # (webui/ensure.sh remains the full converge: clone, unit, bind addresses.)
+  webui_dir="${home}/.local/apps/hermes-webui"
+  if [[ -d "${webui_dir}/.git" ]]; then
+    echo "[changed] updating hermes-webui for ${USERNAME}"
+    if run_as_user "git -C '${webui_dir}' fetch --depth 1 origin master >/dev/null 2>&1 && git -C '${webui_dir}' reset --hard FETCH_HEAD >/dev/null 2>&1"; then
+      webui_py="$(hermes_python || true)"
+      webui_uv="$(hermes_uv || true)"
+      if [[ -n "$webui_py" && -n "$webui_uv" ]]; then
+        run_as_user "'${webui_uv}' pip install --quiet --python '${webui_py}' -r '${webui_dir}/requirements.txt' >/dev/null 2>&1" \
+          || echo "warning: hermes-webui dependencies did not install; continuing" >&2
+      fi
+      if run_as_user "systemctl --user cat hermes-webui.service" >/dev/null 2>&1; then
+        run_as_user 'systemctl --user restart hermes-webui >/dev/null 2>&1' || true
+      fi
+    else
+      echo "warning: could not update hermes-webui for ${USERNAME}; continuing" >&2
+    fi
+  fi
 fi
 
 # --- model / provider config (LLM gateway) ---
