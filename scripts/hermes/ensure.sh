@@ -156,7 +156,8 @@ if [[ "${HERMES_UPDATE:-0}" == "1" || "$action" == "update" ]]; then
   # WebUI through an isolated runpy shim that does NOT put the WebUI's own
   # directory on sys.path, so an old WebUI paired with a new agent can fail at
   # import time (ModuleNotFoundError: api). Update the checkout, refresh its
-  # dependencies, and restart it so one update keeps both at the same release.
+  # dependencies, repoint the unit at the (possibly regenerated) interpreter,
+  # and restart it so one update keeps both at the same release.
   # (webui/ensure.sh remains the full converge: clone, unit, bind addresses.)
   webui_dir="${home}/.local/apps/hermes-webui"
   if [[ -d "${webui_dir}/.git" ]]; then
@@ -167,6 +168,27 @@ if [[ "${HERMES_UPDATE:-0}" == "1" || "$action" == "update" ]]; then
       if [[ -n "$webui_py" && -n "$webui_uv" ]]; then
         run_as_user "'${webui_uv}' pip install --quiet --python '${webui_py}' -r '${webui_dir}/requirements.txt' >/dev/null 2>&1" \
           || echo "warning: hermes-webui dependencies did not install; continuing" >&2
+      fi
+      # An agent update can regenerate the PM-managed venv (a new generation
+      # path) and delete the old one, leaving the WebUI unit's baked-in
+      # interpreter/ExecStart pointing at a missing python (status=203/EXEC).
+      # Repoint the unit at the current interpreter before restarting.
+      webui_unit="${home}/.config/systemd/user/hermes-webui.service"
+      if [[ -f "$webui_unit" && -n "$webui_py" ]]; then
+        python3 - "$webui_unit" "$webui_py" "${webui_dir}/server.py" <<'PY'
+import sys
+unit, py, server = sys.argv[1], sys.argv[2], sys.argv[3]
+out = []
+for ln in open(unit).read().splitlines():
+    if ln.startswith("Environment=HERMES_WEBUI_PYTHON="):
+        ln = "Environment=HERMES_WEBUI_PYTHON=" + py
+    elif ln.startswith("ExecStart="):
+        ln = "ExecStart=" + py + " " + server
+    out.append(ln)
+open(unit, "w").write("\n".join(out) + "\n")
+PY
+        chown "$USERNAME" "$webui_unit"
+        run_as_user 'systemctl --user daemon-reload'
       fi
       if run_as_user "systemctl --user cat hermes-webui.service" >/dev/null 2>&1; then
         run_as_user 'systemctl --user restart hermes-webui >/dev/null 2>&1' || true
