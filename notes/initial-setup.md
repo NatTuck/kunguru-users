@@ -131,8 +131,23 @@ secrets); the operator adds them in the dashboard.
    - **Virtual Keys**: create the first key with model/provider restrictions and
      a budget. Requests authenticate OpenAI-style
      (`Authorization: Bearer sk-bf-*`) or via `x-bf-vk`.
-   - **Aliases** (later): map a stable Hermes-facing model name onto whichever
-     upstream model you want, so swaps need no agent-side change.
+   - **Aliases**: map a stable Hermes-facing model name onto whichever upstream
+     model you want, so swaps need no agent-side change. Two flavors:
+     - **Static alias** — attached to a provider key, so the app-facing id stays
+       `provider/alias` (e.g. `kimi/default`).
+     - **Provider-independent alias** — a **global routing rule** whose name is
+       the literal id agents send (e.g. `default-model`); it can be repointed at
+       any provider/model without touching agents. Because it isn't a provider
+       model it does NOT appear in `/v1/models` (the admin catalog); the app
+       surfaces the configured `HERMES_MODEL` in the model picker explicitly
+       (`server/routes.ts`).
+   - **Tracked gateway config** (per AGENTS.md): the secret-free desired state
+     lives at `bifrost/<instance>/routing-rules.json` and is converged by
+     `scripts/bifrost/apply-routing-rules.sh --ssh kunguru@<gateway>`. It reads
+     admin credentials from `/etc/bifrost/env` on the gateway over ssh and is
+     idempotent (matched by rule name+scope). Example: kunguru.net's global
+     `default-model` → `raven/vllm/realderpz/Swift-1.5-Qwen3.8-27B-FP8`.
+     Set a tenant-facing default by pointing `HERMES_MODEL` at the alias.
 
 Smoke test:
 

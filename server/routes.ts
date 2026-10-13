@@ -131,6 +131,17 @@ function allowedModels(
     .map((m) => ({ id: `${m.provider}/${m.name}`, name: m.name, provider: m.provider }));
 }
 
+// A provider-independent default is a bare Bifrost routing alias (e.g.
+// `default-model`) resolved by the gateway at request time; it is deliberately
+// NOT part of any provider's catalog, so surface it explicitly for the pickers.
+function withDefault(
+  models: { id: string; name: string; provider: string }[],
+  fallback: string,
+): { id: string; name: string; provider: string }[] {
+  if (!fallback || models.some((m) => m.id === fallback)) return models;
+  return [{ id: fallback, name: fallback, provider: "" }, ...models];
+}
+
 async function modelViewFor(
   db: ReturnType<typeof getDb>,
   userId: number,
@@ -140,7 +151,7 @@ async function modelViewFor(
   return {
     current: account?.hermes_model ?? null,
     default: HERMES_MODEL,
-    models: allowedModels(catalog),
+    models: withDefault(allowedModels(catalog), HERMES_MODEL),
   };
 }
 
@@ -167,13 +178,17 @@ async function setModelFor(
     });
     return;
   }
-  if (!catalog.some((m) => `${m.provider}/${m.name}` === picked)) {
-    res.status(400).json({ error: "unknown model" });
-    return;
-  }
-  if (!allowedModels(catalog).some((m) => m.id === picked)) {
-    res.status(400).json({ error: "model is not available for this account" });
-    return;
+  // The instance default may be a provider-independent routing alias that is
+  // absent from the catalog; accept it without a catalog/provider check.
+  if (picked !== HERMES_MODEL) {
+    if (!catalog.some((m) => `${m.provider}/${m.name}` === picked)) {
+      res.status(400).json({ error: "unknown model" });
+      return;
+    }
+    if (!allowedModels(catalog).some((m) => m.id === picked)) {
+      res.status(400).json({ error: "model is not available for this account" });
+      return;
+    }
   }
   try {
     const result = await applyUserModel({ user: target, model: picked, createdBy });

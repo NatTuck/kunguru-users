@@ -1,0 +1,17 @@
+[
+  {
+    "name": "default-model",
+    "description": "Provider-independent default model alias. Repoint the target to change the cluster-wide default without touching any tenant agent. Applied by scripts/bifrost/apply-routing-rules.sh.",
+    "enabled": true,
+    "scope": "global",
+    "priority": 0,
+    "cel_expression": "model == 'default-model'",
+    "targets": [
+      {
+        "provider": "raven",
+        "model": "vllm/realderpz/Swift-1.5-Qwen3.8-27B-FP8",
+        "weight": 1
+      }
+    ]
+  }
+]

@@ -21,3 +21,16 @@ on the machine where this should run. Everything we need to set things up
 should be in that checkout except for the instance-specific config.
 
 See notes/servers.md for the test instances.
+
+## Project Scope
+
+The scope of this project includes both developing and deploying the web app in
+this repo and managing the test instances (see notes/servers.md), especially
+including the Bifrost instances. The (secret free) Bifrost configs should
+be tracked in this repo (at ./bifrost/{instance}).
+
+Directly doing Bifrost config changes by editing config files or using the
+API on the live test instances is in scope and expected.
+
+Double check that we really have no secrets committed before pushing this
+repo to a public git hosting service.
