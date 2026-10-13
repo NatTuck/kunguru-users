@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
+import { config } from "./config";
 
 // App-side client for the Bifrost LLM gateway (see notes/initial-setup.md §4).
 // The app issues one scoped virtual key per managed account so the tenant's
@@ -9,33 +10,26 @@ import { promisify } from "node:util";
 // the key secret travels in memory to the agent's config on the host and is
 // never stored by this app.
 //
-// Defaults match the kunguru hub deployment. Override per instance via env in
-// ~/.config/kunguru-users.env (never in the repo).
-
+// Instance identity comes from the per-instance config (server/config.ts).
+// There are no built-in defaults: a missing value fails startup rather than
+// silently pointing at another deployment.
+//
 // Management API origin. The web app runs on the same host as the Bifrost
 // container, so the loopback URL is used for admin operations (no TLS needed).
-export const BIFROST_API_URL =
-  process.env.BIFROST_API_URL ?? "http://127.0.0.1:8181";
+export const BIFROST_API_URL = config.llm.apiUrl;
 
-// Providers a per-user key is scoped to (whitespace-separated names as shown
-// in the Bifrost dashboard). Agents may use any model those providers serve.
-export const BIFROST_PROVIDERS = (
-  process.env.BIFROST_PROVIDERS ?? "deepseek"
-)
-  .split(/\s+/)
-  .filter(Boolean);
+// Providers a per-user key is scoped to (names as shown in the Bifrost
+// dashboard). Agents may use any model those providers serve.
+export const BIFROST_PROVIDERS = config.llm.providers;
 
 // OpenAI-compatible endpoint + default model the tenant Hermes agents are
-// pointed at (Hermes model.base_url needs the /v1 suffix).
-export const HERMES_LLM_BASE_URL =
-  process.env.HERMES_LLM_BASE_URL ?? "https://llm.ironbeard.com/v1";
-// Bifrost model alias (not an upstream model id). The gateway's `deepseek`
-// provider key maps alias `flash` -> the upstream `deepseek-flash` model, so
-// `deepseek/flash` stays stable across upstream model swaps.
-export const HERMES_MODEL = process.env.HERMES_MODEL ?? "deepseek/flash";
+// pointed at (Hermes model.base_url needs the /v1 suffix). The model may be a
+// provider-independent Bifrost routing alias (e.g. `default-model`).
+export const HERMES_LLM_BASE_URL = config.llm.baseUrl;
+export const HERMES_MODEL = config.llm.model;
 
 // XMPP domain agents bridge into (their Snikket account lives on this domain).
-export const XMPP_DOMAIN = process.env.XMPP_DOMAIN ?? "chat.ironbeard.com";
+export const XMPP_DOMAIN = config.xmppDomain;
 
 const ENV_FILE = "/etc/bifrost/env";
 

@@ -12,6 +12,7 @@ import {
 } from "./inventory";
 import { siteRoutes } from "./sites";
 import { runRemote } from "./transport/run";
+import { config } from "./config";
 
 export interface ReconcileResult {
   ok: boolean;
@@ -53,7 +54,7 @@ export async function reconcileUserSites(): Promise<ReconcileResult> {
       KUNGURU_ACME_EMAIL: ACME_EMAIL,
       KUNGURU_SITES_CERT: SITES_CERT_NAME,
       KUNGURU_EXTRA_HOSTS: EXTRA_CERT_HOSTS,
-      KUNGURU_AUTH_TARGET: `127.0.0.1:${process.env.PORT ?? 3030}`,
+      KUNGURU_AUTH_TARGET: `127.0.0.1:${config.runtime.port}`,
     },
     timeoutMs: 300_000,
   });

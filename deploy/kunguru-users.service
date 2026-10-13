@@ -7,9 +7,10 @@
 #   systemctl --user enable --now kunguru-users
 # First-boot admin password: journalctl --user -u kunguru-users
 #
-# The app runs as the user that owns this unit (kunguru). Instance-specific
-# config lives in ~/.config/kunguru-users.env (optional; see
-# deploy/kunguru-users.env.example).
+# The app runs as the user that owns this unit (kunguru). It has no built-in
+# instance defaults: ~/.config/kunguru-users.env MUST exist and set
+# KUNGURU_INSTANCE=<name> (see deploy/instances/<name>.json), or the service
+# exits. See deploy/kunguru-users.env.example.
 
 [Unit]
 Description=Kunguru user management app
@@ -19,7 +20,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/.local/apps/kunguru-users
-EnvironmentFile=-%h/.config/kunguru-users.env
+EnvironmentFile=%h/.config/kunguru-users.env
 ExecStart=%h/.local/bin/mise exec -- pnpm start
 Restart=on-failure
 RestartSec=3

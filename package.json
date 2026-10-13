@@ -12,6 +12,8 @@
     "build": "vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit",
+    "check:config": "node scripts/check-config.mjs",
+    "check": "tsc --noEmit && node scripts/check-config.mjs",
     "reset-admin-pw": "tsx server/reset-admin-pw.ts",
     "set-default-model": "tsx server/set-default-model.ts",
     "bifrost-cleanup-keys": "tsx server/bifrost-cleanup-keys.ts",

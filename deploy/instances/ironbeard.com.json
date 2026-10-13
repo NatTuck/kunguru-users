@@ -1,0 +1,23 @@
+{
+  "domain": "ironbeard.com",
+  "cookieDomain": "users.ironbeard.com",
+  "acmeEmail": "nat@ferrus.net",
+  "sitesCert": "kunguru-sites",
+  "extraCertHosts": ["users.ironbeard.com", "llm.ironbeard.com"],
+  "gatewayWgIp": "10.0.0.1",
+  "snikketHost": "otter.ferrus.net",
+  "gatewayHost": "otter.ferrus.net",
+  "sshUser": "kunguru",
+  "xmppDomain": "chat.ironbeard.com",
+  "llm": {
+    "apiUrl": "http://127.0.0.1:8181",
+    "baseUrl": "https://llm.ironbeard.com/v1",
+    "providers": ["deepseek"],
+    "model": "deepseek/flash"
+  },
+  "hosts": [
+    { "name": "otter.ferrus.net", "role": "admin", "sshTarget": "localhost" },
+    { "name": "goose.ferrus.net", "role": "user-server", "sshTarget": "10.0.1.2" }
+  ],
+  "runtime": { "port": 3030, "host": "127.0.0.1" }
+}

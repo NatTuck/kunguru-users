@@ -2,6 +2,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import ViteExpress from "vite-express";
 import { ensureAdminSeed, ensureHostSeed, getAliasByLabel, getDb, getUserByUsername, ADMIN_USERNAME } from "./db";
+import { config } from "./config";
 import { hostSeeds } from "./inventory";
 import { resolveSession } from "./auth";
 import { privateLabelFromHost, privateUsernameFromHost } from "./sites";
@@ -74,8 +75,8 @@ app.get("/internal/auth", (req, res) => {
 
 app.use("/api", api);
 
-const PORT = Number(process.env.PORT ?? 3030);
-const HOST = process.env.HOST ?? "127.0.0.1";
+const PORT = config.runtime.port;
+const HOST = config.runtime.host;
 
 const db = getDb();
 
