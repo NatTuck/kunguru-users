@@ -13,6 +13,7 @@
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit",
     "reset-admin-pw": "tsx server/reset-admin-pw.ts",
+    "set-default-model": "tsx server/set-default-model.ts",
     "bifrost-cleanup-keys": "tsx server/bifrost-cleanup-keys.ts",
     "sites-reconcile": "tsx server/sites-reconcile.ts"
   },
