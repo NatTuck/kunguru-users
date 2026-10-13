@@ -13,9 +13,13 @@ import {
   getHostById,
   getHostByName,
   getJob,
+  getJobSteps,
+  listActiveAccountUsers,
+  setAccountAgentInfo,
   setAccountModel,
   setAccountStatus,
   setAccountVkId,
+  type Account,
   type Host,
   type JobStatus,
   type User,
@@ -41,6 +45,11 @@ import { runRemote } from "./transport/run";
 import { reconcileUserSites } from "./nginx";
 
 export const STANDARD_ACCOUNT_PROFILE = "standard-account";
+// Lean standardize/upgrade: force the agent to the stable channel, update it,
+// repoint/refresh the WebUI, and (on the hermes step) install plugin deps,
+// reconcile the model, and retire the legacy venv. Deliberately excludes the
+// account/snikket steps so credentials and XMPP identities are untouched.
+export const AGENT_UPDATE_PROFILE = "agent-update";
 // Snikket-only password push (disable neutralizes XMPP; reset rotates the
 // tenant web/XMPP password -- the Hermes agent has its own account).
 export const PASSWORD_SYNC_PROFILE = "password-sync";
@@ -78,6 +87,10 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
   ],
   [MODEL_SET_PROFILE]: [
     { name: "hermes-model", scriptRel: "hermes/set-model.sh", target: "user-host" },
+  ],
+  [AGENT_UPDATE_PROFILE]: [
+    { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
+    { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
   ],
 };
 
@@ -123,6 +136,9 @@ interface RunJobOpts {
   // Per-tenant default Hermes model. Omitted falls back to the instance-wide
   // HERMES_MODEL. Only consumed by the `hermes` and `hermes-model` steps.
   model?: string;
+  // When true, the `hermes` step runs in update mode (HERMES_UPDATE=1): record
+  // the stable channel, upgrade the agent, and retire the legacy venv.
+  update?: boolean;
   // Optional extra env exported to every step (e.g. HERMES_ACTION=stop).
   action?: string;
 }
@@ -175,6 +191,7 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
       if (s.def.name === "hermes") {
         env.HERMES_LLM_BASE_URL = HERMES_LLM_BASE_URL;
         env.HERMES_MODEL = opts.model ?? HERMES_MODEL;
+        if (opts.update) env.HERMES_UPDATE = "1";
         if (opts.llm?.apiKey) env.HERMES_LLM_API_KEY = opts.llm.apiKey;
         if (opts.agent) {
           env.XMPP_JID = `${opts.agent.username}@${XMPP_DOMAIN}`;
@@ -371,6 +388,8 @@ async function runStandardAccountProvision(opts: {
         await setVirtualKeyActive(opts.previousVkId, false).catch(() => undefined);
       }
       setAccountStatus(db, opts.accountId, "active", result.jobId);
+      // Reconcile the stored model + fleet view from the run's markers.
+      reconcileFromJobOutput(db, opts.accountId, result.jobId);
     } else {
       // The fresh key was never used by a successful run; remove it so failed
       // provisions do not leave deactivated orphans behind.
@@ -518,6 +537,187 @@ export async function applyUserModel(opts: {
   } finally {
     inFlight.delete(opts.user.id);
   }
+}
+
+// --- Standardize / agent update (stable channel + PM venv) ---
+
+function marker(text: string, key: string): string | null {
+  const m = text.match(new RegExp(`^${key}=(.*)$`, "m"));
+  const v = m?.[1]?.trim();
+  return v ? v : null;
+}
+
+// Reconcile an account's stored model + fleet view from the machine-readable
+// markers a hermes/ensure.sh run prints (`KEY=value` lines).
+function reconcileFromJobOutput(
+  db: ReturnType<typeof getDb>,
+  accountId: number,
+  jobId: number,
+): void {
+  const output = getJobSteps(db, jobId)
+    .map((s) => s.output_log ?? "")
+    .join("\n");
+  const actualModel = marker(output, "HERMES_MODEL_ACTUAL");
+  if (actualModel) setAccountModel(db, accountId, actualModel);
+  const channel = marker(output, "HERMES_CHANNEL");
+  const version = marker(output, "HERMES_AGENT_VERSION");
+  const venvKind = marker(output, "HERMES_VENV_KIND");
+  if (channel || version || venvKind) {
+    setAccountAgentInfo(db, accountId, {
+      ...(channel ? { channel } : {}),
+      ...(version ? { version } : {}),
+      ...(venvKind ? { venvKind } : {}),
+    });
+  }
+}
+
+async function runAgentUpdate(
+  db: ReturnType<typeof getDb>,
+  user: Pick<User, "id" | "username">,
+  account: Account,
+  host: Host,
+  createdBy: number | null,
+  jobId: number,
+): Promise<ProvisionResult> {
+  const steps: StepRuntime[] = PROFILES[AGENT_UPDATE_PROFILE].map((def) => ({
+    def,
+    host,
+  }));
+  const result = await runJob({
+    user,
+    createdBy,
+    profile: AGENT_UPDATE_PROFILE,
+    jobHostId: host.id,
+    jobId,
+    steps,
+    update: true,
+    // ensure.sh only seeds model.default when the host has none, so this is the
+    // fallback for a host that has never had one; otherwise it is reconciled.
+    model: account.hermes_model ?? undefined,
+  });
+  reconcileFromJobOutput(db, account.id, jobId);
+  return result;
+}
+
+/**
+ * Starts the lean agent-update profile for one tenant: force the stable update
+ * channel, upgrade the agent, repoint/refresh the WebUI, install plugin deps,
+ * reconcile the model, and retire the legacy venv. Runs in the background;
+ * callers poll GET /api/jobs/:id. Refuses if a run is already in flight.
+ */
+export function startAgentUpdate(opts: {
+  user: Pick<User, "id" | "username">;
+  createdBy: number | null;
+}): { jobId: number } {
+  const db = getDb();
+  const account = getAccountForUser(db, opts.user.id);
+  if (!account) throw new Error("user has no provisioned account");
+  if (account.status !== "active") {
+    throw new Error("account is not active; provision it first");
+  }
+  const host = getHostById(db, account.host_id);
+  if (!host) throw new Error("host not found");
+  if (inFlight.has(opts.user.id)) {
+    throw new Error("a provisioning run is already in progress for this user");
+  }
+  const jobId = createJob(db, {
+    hostId: host.id,
+    profile: AGENT_UPDATE_PROFILE,
+    createdBy: opts.createdBy,
+  }).id;
+  inFlight.add(opts.user.id);
+  void runAgentUpdate(db, opts.user, account, host, opts.createdBy, jobId)
+    .catch((err) => console.error(`agent-update job ${jobId} failed:`, err))
+    .finally(() => inFlight.delete(opts.user.id));
+  return { jobId };
+}
+
+export interface FleetUpdateState {
+  running: boolean;
+  total: number;
+  done: number;
+  current: string | null;
+  startedAt: number | null;
+  results: { username: string; jobId: number | null; status: string }[];
+}
+
+let fleetUpdate: FleetUpdateState = {
+  running: false,
+  total: 0,
+  done: 0,
+  current: null,
+  startedAt: null,
+  results: [],
+};
+
+export function getFleetUpdateState(): FleetUpdateState {
+  return fleetUpdate;
+}
+
+/**
+ * Starts a serialized fleet-wide agent update: one tenant at a time (each is a
+ * heavy git pull + restart). Returns immediately; progress is exposed via
+ * getFleetUpdateState(). Refuses if a fleet run is already in progress.
+ */
+export function startFleetAgentUpdate(opts: { createdBy: number | null }): {
+  started: boolean;
+  total: number;
+} {
+  if (fleetUpdate.running) throw new Error("a fleet update is already running");
+  const db = getDb();
+  const targets = listActiveAccountUsers(db);
+  fleetUpdate = {
+    running: true,
+    total: targets.length,
+    done: 0,
+    current: null,
+    startedAt: Date.now(),
+    results: [],
+  };
+  void (async () => {
+    for (const t of targets) {
+      const account = getAccountForUser(db, t.id);
+      const host = account ? getHostById(db, account.host_id) : undefined;
+      if (!account || !host || account.status !== "active") {
+        fleetUpdate.results.push({ username: t.username, jobId: null, status: "skipped" });
+        fleetUpdate.done += 1;
+        continue;
+      }
+      fleetUpdate.current = t.username;
+      if (inFlight.has(t.id)) {
+        fleetUpdate.results.push({ username: t.username, jobId: null, status: "busy" });
+        fleetUpdate.done += 1;
+        continue;
+      }
+      let jobId: number | null = null;
+      try {
+        jobId = createJob(db, {
+          hostId: host.id,
+          profile: AGENT_UPDATE_PROFILE,
+          createdBy: opts.createdBy,
+        }).id;
+        inFlight.add(t.id);
+        const res = await runAgentUpdate(
+          db,
+          { id: t.id, username: t.username },
+          account,
+          host,
+          opts.createdBy,
+          jobId,
+        );
+        fleetUpdate.results.push({ username: t.username, jobId, status: res.status });
+      } catch (err) {
+        fleetUpdate.results.push({ username: t.username, jobId, status: "error" });
+        console.error(`fleet agent-update ${t.username} failed:`, err);
+      } finally {
+        inFlight.delete(t.id);
+        fleetUpdate.done += 1;
+      }
+    }
+    fleetUpdate.running = false;
+    fleetUpdate.current = null;
+  })();
+  return { started: true, total: targets.length };
 }
 
 /**

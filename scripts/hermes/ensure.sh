@@ -111,6 +111,31 @@ hermes_uv() {
   return 1
 }
 
+# write_guarded DEST SIDECAR SRC: install SRC at DEST only when DEST is absent
+# or still matches the app's last write (SIDECAR holds its sha256). A tenant edit
+# is preserved: back it up and leave DEST untouched.
+write_guarded() {
+  local dest="$1" side="$2" src="$3" want have prev
+  want="$(sha256sum "$src" | cut -d' ' -f1)"
+  if [[ -f "$dest" ]]; then
+    have="$(sha256sum "$dest" | cut -d' ' -f1)"
+    prev="$(cat "$side" 2>/dev/null || true)"
+    if [[ "$have" == "$want" ]]; then
+      printf '%s\n' "$want" > "$side"
+      chown "$USERNAME" "$side" 2>/dev/null || true
+      return 0
+    fi
+    if [[ -n "$prev" && "$have" != "$prev" ]]; then
+      echo "warning: ${dest} was edited by ${USERNAME}; backing up, not overwriting" >&2
+      cp -a "$dest" "${dest}.bak-$(date +%s)"
+      return 0
+    fi
+  fi
+  install -m 0644 -o "$USERNAME" "$src" "$dest"
+  printf '%s\n' "$want" > "$side"
+  chown "$USERNAME" "$side" 2>/dev/null || true
+}
+
 if [[ "$action" == "stop" ]]; then
   echo "[ok] stopping hermes gateway for ${USERNAME}"
   run_as_user 'systemctl --user disable --now hermes-xmpp-watchdog.timer >/dev/null 2>&1 || true'
@@ -148,7 +173,15 @@ fi
 # --- optional: bring hermes-agent to the latest upstream ---
 # Heavy (git pull + dependency reinstall + service restart), so only when asked:
 # HERMES_UPDATE=1 or HERMES_ACTION=update.
+did_update=0
 if [[ "${HERMES_UPDATE:-0}" == "1" || "$action" == "update" ]]; then
+  did_update=1
+  # Record the channel BEFORE updating: an unrecorded official checkout is
+  # forward-only, so `hermes update --yes` would NOT move a newer checkout back
+  # to the stable release. `--set-channel` is metadata-only and idempotent.
+  echo "[changed] recording stable update channel for ${USERNAME}"
+  run_as_user 'hermes update --set-channel stable' \
+    || echo "warning: could not record stable channel; continuing" >&2
   echo "[changed] updating hermes-agent for ${USERNAME}"
   run_as_user 'hermes update --yes' || echo "warning: 'hermes update' failed; continuing" >&2
 
@@ -209,8 +242,15 @@ if [[ -n "${HERMES_LLM_BASE_URL:-}" ]]; then
   # Bifrost gateway rather than a pile of unrelated providers.
   run_as_user "hermes config set providers.only_configured true >/dev/null"
 fi
+# model.default is RECONCILED, not forced: a tenant may have changed it in the
+# WebUI (which writes config.yaml). Seed it only when the host has no value;
+# otherwise leave it and report the effective value below for the app to persist.
 if [[ -n "${HERMES_MODEL:-}" ]]; then
-  run_as_user "hermes config set model.default '${HERMES_MODEL}' >/dev/null"
+  current_model="$(run_as_user 'hermes config get model.default' 2>/dev/null || true)"
+  current_model="$(printf '%s' "$current_model" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  if [[ -z "$current_model" || "$current_model" == "null" ]]; then
+    run_as_user "hermes config set model.default '${HERMES_MODEL}' >/dev/null"
+  fi
 fi
 if [[ -n "${HERMES_LLM_API_KEY:-}" ]]; then
   run_as_user "hermes config set model.api_key '${HERMES_LLM_API_KEY}' >/dev/null"
@@ -284,7 +324,52 @@ if [[ -n "$plugin_py" && -n "$plugin_uv" ]]; then
 else
   echo "warning: could not locate hermes python/uv to install plugin deps; continuing" >&2
 fi
-run_as_user 'hermes config set plugins.enabled '"'"'["hermes-xmpp-plugin"]'"'"' >/dev/null'
+# Verify the deps actually import in the environment the gateway uses; a silent
+# dependency gap (e.g. after the PM-managed venv replaced the in-tree one) is
+# exactly what leaves the platform registered but unable to connect.
+if [[ -n "$plugin_py" ]]; then
+  if run_as_user "'${plugin_py}' -c 'import slixmpp, slixmpp_omemo, omemo'" >/dev/null 2>&1; then
+    echo "[ok] hermes-xmpp-plugin dependencies importable for ${USERNAME}"
+  else
+    echo "error: hermes-xmpp-plugin deps are not importable in ${plugin_py} for ${USERNAME}" >&2
+    exit 1
+  fi
+fi
+
+# Merge (never replace) so plugins the tenant enabled (e.g. homeassistant) are
+# preserved while hermes-xmpp-plugin is (re)asserted.
+plugins_now="$(run_as_user 'hermes config get plugins.enabled --json 2>/dev/null' || echo '[]')"
+plugins_merged="$(PLUGINS_NOW="$plugins_now" python3 - <<'PY'
+import json, os
+raw = os.environ.get("PLUGINS_NOW") or "[]"
+cur = None
+try:
+    cur = json.loads(raw.strip())
+except Exception:
+    # Tolerate wrapper/log noise: fall back to the last JSON-array-looking line.
+    for line in reversed(raw.splitlines()):
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            try:
+                cur = json.loads(line)
+                break
+            except Exception:
+                pass
+if not isinstance(cur, list):
+    cur = []
+seen = set()
+out = []
+for p in cur:
+    p = str(p).strip()
+    if p and p not in seen:
+        seen.add(p)
+        out.append(p)
+if "hermes-xmpp-plugin" not in seen:
+    out.append("hermes-xmpp-plugin")
+print(json.dumps(out))
+PY
+)"
+run_as_user "hermes config set plugins.enabled '${plugins_merged}' >/dev/null"
 
 # --- enable OMEMO whenever the XMPP platform is configured ---
 # (The plugin defaults omemo_enabled=true, but pin it explicitly.)
@@ -395,7 +480,11 @@ run_as_user 'systemctl --user enable --now hermes-xmpp-watchdog.timer' >/dev/nul
 skill_dir="${home}/.hermes/skills/kunguru-custom/kunguru-sites"
 install -d -o "${USERNAME}" "${home}/.hermes/skills/kunguru-custom"
 install -d -o "${USERNAME}" "$skill_dir" "$skill_dir/references"
-cat > "$skill_dir/SKILL.md" <<'KUNGURU_SITES_SKILL'
+# Build both files to temp, then install them hash-guarded so a tenant's own
+# edits to the skill are never silently clobbered (write_guarded backs up).
+tmp_skill="$(mktemp)"
+tmp_local="$(mktemp)"
+cat > "$tmp_skill" <<'KUNGURU_SITES_SKILL'
 ---
 name: kunguru-sites
 description: "Deploy and host web sites/apps for a kunguru tenant under the current multi-tenant scheme. The gateway nginx, TLS certificates, and DNS are managed centrally by the kunguru-users app; you run your app on the assigned slot port and it appears at <user>.<base> (public) or <user>.users.<base> (private, app-session gated). Also covers admin-mediated hostname aliases."
@@ -554,9 +643,9 @@ if [[ -n "$base_domain" && "$user_id" =~ ^[0-9]+$ ]]; then
     echo "| ${USERNAME}.${base_domain} | public-site | $((12000 + user_id)) | public | blanked |"
     echo "| ${USERNAME}.users.${base_domain} | private-app | $((13000 + user_id)) | app session | ${USERNAME} |"
     echo "| ${USERNAME}-agent.users.${base_domain} | hermes-webui | $((11000 + user_id)) | app session | ${USERNAME} |"
-  } > "$skill_dir/references/local.md"
+  } > "$tmp_local"
 else
-  cat > "$skill_dir/references/local.md" <<'KUNGURU_SITES_LOCAL'
+  cat > "$tmp_local" <<'KUNGURU_SITES_LOCAL'
 # Your deployment
 
 Hostnames and ports were not supplied to this converge (`KUNGURU_USER_ID` /
@@ -564,8 +653,11 @@ Hostnames and ports were not supplied to this converge (`KUNGURU_USER_ID` /
 and ports, or re-run the provision step from the kunguru-users app.
 KUNGURU_SITES_LOCAL
 fi
+write_guarded "$skill_dir/SKILL.md" "$skill_dir/.app-hash.skill" "$tmp_skill"
+write_guarded "$skill_dir/references/local.md" "$skill_dir/references/.app-hash.local" "$tmp_local"
+rm -f "$tmp_skill" "$tmp_local"
 chown -R "${USERNAME}" "${home}/.hermes/skills/kunguru-custom"
-echo "[ok] kunguru-sites skill installed for ${USERNAME}"
+echo "[ok] kunguru-sites skill converged for ${USERNAME}"
 
 sleep 3
 if run_as_user 'systemctl --user is-enabled hermes-gateway' >/dev/null 2>&1; then
@@ -583,5 +675,36 @@ if run_as_user 'systemctl --user is-active hermes-xmpp-watchdog.timer' >/dev/nul
 else
   echo "warning: xmpp watchdog timer not active for ${USERNAME}" >&2
 fi
+
+# --- retire the pre-PM in-tree venv (only after a full update) ---
+# The PM-managed environment fully supersedes it, and the WebUI/gateway have
+# been repointed by now. Guard: skip removal if anything outside the venv still
+# references the path (tenant cron/scripts, unit files); they may be the user's.
+legacy_venv="${home}/.hermes/hermes-agent/venv"
+if [[ "$did_update" == "1" && -d "$legacy_venv" ]]; then
+  refs="$(grep -rIl --exclude-dir=venv "hermes-agent/venv" \
+    "${home}/.config/systemd/user" "${home}/.hermes/bin" \
+    "${home}/.local/bin" "${home}/bin" 2>/dev/null || true)"
+  crons="$(run_as_user 'crontab -l 2>/dev/null' || true)"
+  if [[ -n "$refs" || "$crons" == *"hermes-agent/venv"* ]]; then
+    echo "warning: not removing ${legacy_venv}; still referenced:" >&2
+    [[ -n "$refs" ]] && printf '  %s\n' $refs >&2
+    [[ "$crons" == *"hermes-agent/venv"* ]] && echo "  (crontab)" >&2
+  else
+    echo "[changed] removing superseded legacy venv for ${USERNAME}"
+    rm -rf "$legacy_venv"
+  fi
+fi
+
+# --- machine-readable convergence markers (parsed by the app for the fleet view) ---
+version_line="$(run_as_user 'hermes --version' 2>/dev/null | head -1 || true)"
+agent_version="$(printf '%s' "$version_line" | grep -oE 'v[0-9][^ ]*' | head -1)"
+agent_channel="$(printf '%s' "$version_line" | sed -n 's/.*· *\([a-z]*\) *·.*/\1/p')"
+if [[ -d "${home}/.hermes/hermes-agent/venv" ]]; then venv_kind="legacy"; else venv_kind="pm"; fi
+actual_model="$(run_as_user 'hermes config get model.default' 2>/dev/null | tr -d '\r' | head -1 || true)"
+printf 'HERMES_AGENT_VERSION=%s\n' "${agent_version:-unknown}"
+printf 'HERMES_CHANNEL=%s\n' "${agent_channel:-unknown}"
+printf 'HERMES_VENV_KIND=%s\n' "${venv_kind}"
+printf 'HERMES_MODEL_ACTUAL=%s\n' "${actual_model}"
 
 echo "[ok] ensure-hermes complete for ${USERNAME}"

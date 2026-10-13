@@ -38,7 +38,10 @@ import {
 } from "./auth";
 import {
   deactivateUserAccess,
+  getFleetUpdateState,
   sendAgentXmppMessage,
+  startAgentUpdate,
+  startFleetAgentUpdate,
   startStandardAccountProvision,
   syncSnikketPassword,
   applyUserModel,
@@ -731,6 +734,55 @@ api.post("/users/:id/provision", requireAuth, requireAdmin, async (req, res) => 
       error: err instanceof Error ? err.message : "provisioning failed",
     });
   }
+});
+
+// Standardize/upgrade a tenant's agent: force the stable channel, update the
+// agent + WebUI onto the PM-managed environment, install plugin deps, reconcile
+// the model, and retire the legacy venv. Background job; poll GET /api/jobs/:id.
+api.post("/users/:id/update", requireAuth, requireAdmin, (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const db = getDb();
+  const target = getUserById(db, id);
+  if (!target) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (!target.enabled) {
+    res.status(400).json({ error: "user is disabled; enable it first" });
+    return;
+  }
+  try {
+    const { jobId } = startAgentUpdate({
+      user: { id: target.id, username: target.username },
+      createdBy: currentUserId(res) ?? null,
+    });
+    res.status(202).json({ user: { id: target.id, username: target.username }, jobId });
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : "failed to start update",
+    });
+  }
+});
+
+// Fleet-wide standardize/upgrade: serialized (one tenant at a time). Returns
+// immediately; poll GET /api/users/update/status for progress.
+api.post("/users/update", requireAuth, requireAdmin, (_req, res) => {
+  try {
+    const state = startFleetAgentUpdate({ createdBy: currentUserId(res) ?? null });
+    res.status(202).json(state);
+  } catch (err) {
+    res.status(409).json({
+      error: err instanceof Error ? err.message : "failed to start fleet update",
+    });
+  }
+});
+
+api.get("/users/update/status", requireAuth, requireAdmin, (_req, res) => {
+  res.json(getFleetUpdateState());
 });
 
 // Reset password: rotates the shared web/XMPP password and re-syncs Snikket

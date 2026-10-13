@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { ApiError, get, patch, post } from "./api";
 import type {
   AdminUser,
+  FleetUpdateStatus,
   JobDetail,
   MessageResult,
   ModelsRefreshResult,
@@ -17,6 +18,7 @@ interface UsersState {
   busy: boolean;
   actionError: string | null;
   reveal: PasswordReveal | null;
+  fleetUpdate: FleetUpdateStatus | null;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
   create: (username: string, role: Role, hostId: number) => Promise<void>;
@@ -25,6 +27,9 @@ interface UsersState {
   enable: (id: number) => Promise<void>;
   resetPassword: (id: number) => Promise<void>;
   provision: (id: number, hostId: number) => Promise<void>;
+  update: (id: number) => Promise<void>;
+  updateAll: () => Promise<void>;
+  loadFleetUpdate: () => Promise<void>;
   sendMessage: (id: number, message: string) => Promise<MessageResult | null>;
   refreshModels: () => Promise<ModelsRefreshResult | null>;
   job: (id: number) => Promise<JobDetail>;
@@ -74,6 +79,7 @@ export const useUsersStore = create<UsersState>((set, getState) => ({
   busy: false,
   actionError: null,
   reveal: null,
+  fleetUpdate: null,
 
   load: async () => {
     set({ loading: true, listError: null });
@@ -201,6 +207,56 @@ export const useUsersStore = create<UsersState>((set, getState) => ({
       await refreshUsers(set);
     } catch (err) {
       set({ busy: false, actionError: await msg(err, "failed to provision user") });
+    }
+  },
+
+  // Standardize/upgrade one tenant's agent onto the stable channel + PM venv.
+  update: async (id) => {
+    set({ busy: true, actionError: null });
+    try {
+      const data = await post<{ user: AdminUser; jobId: number }>(`/api/users/${id}/update`);
+      set({
+        busy: false,
+        reveal: {
+          user: data.user,
+          kind: "update",
+          provisioning: { ok: false, jobId: data.jobId, status: "running" },
+        },
+      });
+      getState().watchJob(data.jobId);
+    } catch (err) {
+      set({ busy: false, actionError: await msg(err, "failed to start update") });
+    }
+  },
+
+  // Serialized fleet-wide standardize. Progress is polled via loadFleetUpdate.
+  updateAll: async () => {
+    set({ busy: true, actionError: null });
+    try {
+      const data = await post<{ started: boolean; total: number }>("/api/users/update");
+      set({
+        busy: false,
+        fleetUpdate: {
+          running: true,
+          total: data.total,
+          done: 0,
+          current: null,
+          startedAt: Date.now(),
+          results: [],
+        },
+      });
+    } catch (err) {
+      set({ busy: false, actionError: await msg(err, "failed to start fleet update") });
+    }
+  },
+
+  loadFleetUpdate: async () => {
+    try {
+      const data = await get<FleetUpdateStatus>("/api/users/update/status");
+      set({ fleetUpdate: data });
+      if (!data.running) await refreshUsers(set);
+    } catch {
+      // transient; keep the last known state
     }
   },
 

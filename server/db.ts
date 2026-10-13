@@ -55,6 +55,12 @@ export interface Account {
   // Per-tenant default Hermes model (Bifrost `provider/name`). NULL falls back
   // to the instance-wide HERMES_MODEL; set when the user picks one in the UI.
   hermes_model: string | null;
+  // Fleet visibility, reconciled from each agent host: the recorded update
+  // channel, the agent version banner, and whether the agent runs on the
+  // PM-managed environment ("pm") or the retired in-tree venv ("legacy").
+  agent_channel: string | null;
+  agent_version: string | null;
+  venv_kind: string | null;
 }
 
 export interface JobRow {
@@ -139,6 +145,9 @@ export const SCHEMA = `
     last_job_id INTEGER REFERENCES jobs(id),
     bifrost_vk_id TEXT,
     hermes_model TEXT,
+    agent_channel TEXT,
+    agent_version TEXT,
+    venv_kind TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (user_id, host_id)
   );
@@ -194,6 +203,15 @@ function migrate(db: Database.Database): void {
   }
   if (!acols.some((c) => c.name === "hermes_model")) {
     db.exec("ALTER TABLE accounts ADD COLUMN hermes_model TEXT");
+  }
+  if (!acols.some((c) => c.name === "agent_channel")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN agent_channel TEXT");
+  }
+  if (!acols.some((c) => c.name === "agent_version")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN agent_version TEXT");
+  }
+  if (!acols.some((c) => c.name === "venv_kind")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN venv_kind TEXT");
   }
 }
 
@@ -278,6 +296,9 @@ export interface AdminUserRow extends PublicUser {
     hostName: string;
     hostRole: HostRole;
     status: AccountStatus;
+    agentChannel: string | null;
+    agentVersion: string | null;
+    venvKind: string | null;
   } | null;
 }
 
@@ -287,13 +308,17 @@ export interface AccountJoinRow extends PublicUser {
   host_name: string | null;
   host_role: HostRole | null;
   account_status: AccountStatus | null;
+  agent_channel: string | null;
+  agent_version: string | null;
+  venv_kind: string | null;
 }
 
 export function listUsersWithAccounts(db: Database.Database): AccountJoinRow[] {
   return db
     .prepare(
       `SELECT u.id, u.username, u.role, u.enabled, u.created_at,
-              a.host_id, h.name AS host_name, h.role AS host_role, a.status AS account_status
+              a.host_id, h.name AS host_name, h.role AS host_role, a.status AS account_status,
+              a.agent_channel, a.agent_version, a.venv_kind
        FROM users u
        LEFT JOIN accounts a ON a.user_id = u.id
        LEFT JOIN hosts h ON h.id = a.host_id
@@ -353,6 +378,9 @@ export function toAdminRows(rows: AccountJoinRow[]): AdminUserRow[] {
             hostName: r.host_name as string,
             hostRole: r.host_role as HostRole,
             status: r.account_status as AccountStatus,
+            agentChannel: r.agent_channel,
+            agentVersion: r.agent_version,
+            venvKind: r.venv_kind,
           }
         : null,
   }));
@@ -566,6 +594,9 @@ export function createAccount(
     last_job_id: null,
     bifrost_vk_id: null,
     hermes_model: null,
+    agent_channel: null,
+    agent_version: null,
+    venv_kind: null,
   };
 }
 
@@ -596,6 +627,32 @@ export function setAccountModel(
   model: string | null,
 ): void {
   db.prepare("UPDATE accounts SET hermes_model = ? WHERE id = ?").run(model, accountId);
+}
+
+// Fleet visibility, set from a converge's machine-readable markers. Only the
+// provided fields are updated; omitted fields are left untouched.
+export function setAccountAgentInfo(
+  db: Database.Database,
+  accountId: number,
+  info: { channel?: string | null; version?: string | null; venvKind?: string | null },
+): void {
+  const sets: string[] = [];
+  const vals: (string | null)[] = [];
+  if (info.channel !== undefined) {
+    sets.push("agent_channel = ?");
+    vals.push(info.channel);
+  }
+  if (info.version !== undefined) {
+    sets.push("agent_version = ?");
+    vals.push(info.version);
+  }
+  if (info.venvKind !== undefined) {
+    sets.push("venv_kind = ?");
+    vals.push(info.venvKind);
+  }
+  if (sets.length === 0) return;
+  vals.push(String(accountId));
+  db.prepare(`UPDATE accounts SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
 }
 
 export function getAccountByUserHost(

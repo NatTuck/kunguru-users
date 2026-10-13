@@ -21,6 +21,7 @@ import { del, get, post } from "./api";
 import type {
   AdminUser,
   Alias,
+  FleetUpdateStatus,
   Host,
   JobDetail,
   MessageResult,
@@ -49,6 +50,10 @@ export default function UsersPage() {
     enable,
     resetPassword,
     provision,
+    update,
+    updateAll,
+    fleetUpdate,
+    loadFleetUpdate,
     refreshModels,
     clearReveal,
   } = useUsersStore();
@@ -91,6 +96,16 @@ export default function UsersPage() {
     const id = setInterval(() => void refresh(), 4000);
     return () => clearInterval(id);
   }, [anyPending, refresh]);
+
+  // Adopt any fleet update already in progress, then poll it until it finishes.
+  useEffect(() => {
+    void loadFleetUpdate();
+  }, [loadFleetUpdate]);
+  useEffect(() => {
+    if (!fleetUpdate?.running) return;
+    const id = setInterval(() => void loadFleetUpdate(), 3000);
+    return () => clearInterval(id);
+  }, [fleetUpdate?.running, loadFleetUpdate]);
 
   const [refreshing, setRefreshing] = useState(false);
   const doRefresh = async () => {
@@ -143,6 +158,13 @@ export default function UsersPage() {
           >
             Refresh models &amp; WebUIs
           </Button>
+          <Button
+            variant="outline"
+            isDisabled={busy || fleetUpdate?.running}
+            onPress={() => void updateAll()}
+          >
+            {fleetUpdate?.running ? "Updating all…" : "Update all agents"}
+          </Button>
         </div>
       </div>
 
@@ -159,6 +181,12 @@ export default function UsersPage() {
       {modelsResult && (
         <div className="mb-4">
           <ModelsRefreshAlert result={modelsResult} onDismiss={() => setModelsResult(null)} />
+        </div>
+      )}
+
+      {fleetUpdate && (fleetUpdate.running || fleetUpdate.results.length > 0) && (
+        <div className="mb-4">
+          <FleetUpdateAlert status={fleetUpdate} />
         </div>
       )}
 
@@ -286,6 +314,7 @@ export default function UsersPage() {
                         const firstHost = hosts[0]?.id;
                         setProvisionHost(u.account ? String(u.account.hostId) : firstHost != null ? String(firstHost) : null);
                       }}
+                      onUpdate={() => void update(u.id)}
                       onAliases={() => setAliasesFor(u)}
                       onMessage={() => setMessageFor(u)}
                       onModel={() => setModelFor(u)}
@@ -446,6 +475,40 @@ function ModelsRefreshAlert({
   );
 }
 
+function FleetUpdateAlert({ status }: { status: FleetUpdateStatus }) {
+  const failed = status.results.filter((r) => r.status !== "succeeded");
+  return (
+    <Alert status={status.running ? "accent" : failed.length > 0 ? "warning" : "success"}>
+      <Alert.Content>
+        <Alert.Title>
+          {status.running ? "Updating all agents" : "Agent update finished"}
+        </Alert.Title>
+        <Alert.Description>
+          <div className="space-y-1 text-sm">
+            {status.running ? (
+              <div className="flex items-center gap-2">
+                <Spinner size="sm" />
+                {status.done}/{status.total} done
+                {status.current ? ` — updating ${status.current}…` : "…"}
+              </div>
+            ) : (
+              <div>
+                {status.results.filter((r) => r.status === "succeeded").length}/
+                {status.total} updated
+              </div>
+            )}
+            {failed.length > 0 && (
+              <div className="text-red-600">
+                {failed.map((r) => `${r.username}: ${r.status}`).join("; ")}
+              </div>
+            )}
+          </div>
+        </Alert.Description>
+      </Alert.Content>
+    </Alert>
+  );
+}
+
 function UserRow({
   user: u,
   meId,
@@ -462,6 +525,7 @@ function UserRow({
   onCancelReset,
   onReset,
   onProvision,
+  onUpdate,
   onAliases,
   onMessage,
   onModel,
@@ -481,6 +545,7 @@ function UserRow({
   onCancelReset: () => void;
   onReset: () => void;
   onProvision: () => void;
+  onUpdate: () => void;
   onAliases: () => void;
   onMessage: () => void;
   onModel: () => void;
@@ -505,18 +570,29 @@ function UserRow({
       </Table.Cell>
       <Table.Cell>
         {u.account ? (
-          <div className="flex items-center gap-2">
-            <span className="text-sm">{u.account.hostName}</span>
-            <StatusChip
-              label={u.account.status}
-              tone={
-                u.account.status === "active"
-                  ? "success"
-                  : u.account.status === "failed"
-                    ? "danger"
-                    : "warning"
-              }
-            />
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm">{u.account.hostName}</span>
+              <StatusChip
+                label={u.account.status}
+                tone={
+                  u.account.status === "active"
+                    ? "success"
+                    : u.account.status === "failed"
+                      ? "danger"
+                      : "warning"
+                }
+              />
+            </div>
+            {u.account.agentVersion && (
+              <span
+                className="font-mono text-xs text-neutral-500"
+                title={`channel ${u.account.agentChannel ?? "?"} · venv ${u.account.venvKind ?? "?"}`}
+              >
+                {u.account.agentVersion}
+                {u.account.venvKind && u.account.venvKind !== "pm" ? " · legacy venv" : ""}
+              </span>
+            )}
           </div>
         ) : (
           <span className="text-sm text-neutral-400">— not provisioned</span>
@@ -565,6 +641,11 @@ function UserRow({
             {canModel && (
               <Button size="sm" variant="outline" isDisabled={busy} onPress={onModel}>
                 Model
+              </Button>
+            )}
+            {canModel && (
+              <Button size="sm" variant="outline" isDisabled={busy} onPress={onUpdate}>
+                Update
               </Button>
             )}
             {canProvision && (
@@ -616,45 +697,53 @@ function RevealModal({
         ? `Password reset — ${reveal.user.username}`
         : reveal.kind === "enable"
           ? `User enabled — ${reveal.user.username}`
-          : `User provisioned — ${reveal.user.username}`;
+          : reveal.kind === "update"
+            ? `Agent update — ${reveal.user.username}`
+            : `User provisioned — ${reveal.user.username}`;
+  const isUpdate = reveal.kind === "update";
 
   return (
     <ModalShell open onClose={onClose} title={title} width="sm:max-w-[440px]">
       <div className="space-y-4">
-        {reveal.password ? (
-          <>
+        {!isUpdate &&
+          (reveal.password ? (
+            <>
+              <p className="text-sm text-neutral-600">
+                Password for <strong>{reveal.user.username}</strong> — shown only once:
+              </p>
+              <Mono>{reveal.password}</Mono>
+            </>
+          ) : (
             <p className="text-sm text-neutral-600">
-              Password for <strong>{reveal.user.username}</strong> — shown only once:
+              Password for <strong>{reveal.user.username}</strong> unchanged — the existing
+              password still works.
             </p>
-            <Mono>{reveal.password}</Mono>
-          </>
-        ) : (
-          <p className="text-sm text-neutral-600">
-            Password for <strong>{reveal.user.username}</strong> unchanged — the existing
-            password still works.
-          </p>
-        )}
+          ))}
         {prov?.status === "running" ? (
           <div className="flex items-center gap-2 text-sm text-neutral-600">
             <Spinner size="sm" />
-            Provisioning Linux + XMPP + Hermes… this can take several minutes. It keeps
-            running if you close this, and updates automatically here and in the user list.
+            {isUpdate
+              ? "Updating the agent to the stable release + PM environment… this can take several minutes. It keeps running if you close this, and updates here and in the user list."
+              : "Provisioning Linux + XMPP + Hermes… this can take several minutes. It keeps running if you close this, and updates automatically here and in the user list."}
             Use <strong>View log</strong> for live step output.
           </div>
         ) : prov?.ok ? (
           <Alert status="success">
             <Alert.Content>
-              <Alert.Description>Provisioning succeeded (Linux + XMPP).</Alert.Description>
+              <Alert.Description>
+                {isUpdate ? "Agent update succeeded." : "Provisioning succeeded (Linux + XMPP)."}
+              </Alert.Description>
             </Alert.Content>
           </Alert>
         ) : prov && !prov.ok ? (
           <Alert status="danger">
             <Alert.Content>
-              <Alert.Title>Provisioning did not fully succeed</Alert.Title>
+              <Alert.Title>{isUpdate ? "Agent update failed" : "Provisioning did not fully succeed"}</Alert.Title>
               <Alert.Description>
                 {prov.failedStep ? `Failed at step "${prov.failedStep}". ` : ""}
-                The Linux/XMPP accounts may be partially applied; use Repair once things are
-                reachable.
+                {isUpdate
+                  ? "The agent may be partially updated; re-run Update once the host is healthy."
+                  : "The Linux/XMPP accounts may be partially applied; use Repair once things are reachable."}
                 {prov.message ? (
                   <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-white/60 p-2 font-mono text-xs">
                     {prov.message}

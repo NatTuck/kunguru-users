@@ -22,6 +22,9 @@ export interface AccountInfo {
   hostName: string;
   hostRole: HostRole;
   status: AccountStatus;
+  agentChannel: string | null;
+  agentVersion: string | null;
+  venvKind: string | null;
 }
 
 export interface SiteStatus {
@@ -91,8 +94,23 @@ export interface ModelsRefreshResult {
 export interface PasswordReveal {
   user: User;
   password?: string;
-  kind: "create" | "reset" | "provision" | "enable";
+  kind: "create" | "reset" | "provision" | "enable" | "update";
   provisioning?: ProvisionInfo | null;
+}
+
+export interface FleetUpdateResult {
+  username: string;
+  jobId: number | null;
+  status: string;
+}
+
+export interface FleetUpdateStatus {
+  running: boolean;
+  total: number;
+  done: number;
+  current: string | null;
+  startedAt: number | null;
+  results: FleetUpdateResult[];
 }
 
 export interface JobInfo {
