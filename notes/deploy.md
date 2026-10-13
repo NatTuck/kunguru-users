@@ -74,25 +74,30 @@ First boot seeds the `kunguru` admin and prints a **one-time password** to the
 journal. Record it, then log in at the public URL. If it is ever lost:
 `pnpm reset-admin-pw` (regenerates and prints a new one).
 
-## 5. nginx reverse proxy (`https://users.<domain>/`)
+## 5. nginx reverse proxy (`https://users.<base>/`)
 
-On the gateway (otter), as root — nginx already owns 80/443 here.
+On the gateway host, as root — nginx already owns 80/443 here. `deploy/nginx-users.conf`
+is a **template**: it uses placeholders nginx rejects, so an unfilled copy fails
+`nginx -t`. Fill them from the instance config (`deploy/instances/<instance>.json`:
+`domain` and `runtime.port`).
 
 ```sh
-install -m 0644 deploy/nginx-users.conf /etc/nginx/sites-available/kunguru-users
+# <base> = instance domain, <port> = runtime.port (default 3030)
+sed -e 's/<base>/kunguru.net/g' -e 's/<port>/3030/g' \
+  deploy/nginx-users.conf > /etc/nginx/sites-available/kunguru-users
 ln -s /etc/nginx/sites-available/kunguru-users /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
-certbot --nginx -d users.ironbeard.com --agree-tos -m nat@ferrus.net -n
+certbot --nginx -d users.<base> --agree-tos -m <email> -n
 ```
 
-DNS must point `users.<domain>` at the gateway's public IP before certbot runs.
+DNS must point `users.<base>` at the gateway's public IP before certbot runs.
 
 ## 6. Verify
 
 ```sh
-curl -sI https://users.ironbeard.com/                    # 200, SPA
-curl -s  https://users.ironbeard.com/api/auth/me          # 401 (unauth)
-# log in as kunguru, create a user on goose, check the job log in the UI.
+curl -sI https://users.<base>/                    # 200, SPA
+curl -s  https://users.<base>/api/auth/me          # 401 (unauth)
+# log in as kunguru, create a user, check the job log in the UI.
 ```
 
 ## Upgrading
