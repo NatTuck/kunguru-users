@@ -1,17 +1,20 @@
 import { getDb, listActiveAccountUsers, setAccountModel } from "./db";
 import { applyUserModel } from "./provision";
-import { HERMES_MODEL } from "./bifrost";
 
-// One-off maintenance: reset every tenant's stored model selection to the
-// instance default and rewrite the live agents/WebUIs to match. Future
-// per-user picks are unaffected (the model picker still stores per account).
+// One-off maintenance: reset every tenant's stored model selection to the given
+// model and rewrite the live agents/WebUIs to match. Future per-user picks are
+// unaffected (the model picker still stores per account).
 //
-//   MODEL=... pnpm set-default-model      # override the target (default: HERMES_MODEL)
+//   MODEL=default-model pnpm set-default-model
+//
+// MODEL is required: a manual run does NOT inherit the app's systemd
+// HERMES_MODEL, so relying on it would silently fall back to the code default
+// (server/bifrost.ts) instead of the instance's real default.
 
 const db = getDb();
-const model = (process.env.MODEL ?? HERMES_MODEL).trim();
+const model = (process.env.MODEL ?? "").trim();
 if (!model) {
-  console.error("no target model (set MODEL or HERMES_MODEL)");
+  console.error("no target model: pass MODEL=<provider/name|alias>");
   process.exit(1);
 }
 
