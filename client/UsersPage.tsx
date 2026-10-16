@@ -833,6 +833,9 @@ function ProvisionModal({
               {hosts.map((h) => (
                 <Radio key={h.id} value={String(h.id)}>
                   <Radio.Content>
+                    <Radio.Control>
+                      <Radio.Indicator />
+                    </Radio.Control>
                     {h.name} <span className="text-neutral-400">({h.role})</span>
                   </Radio.Content>
                 </Radio>
@@ -1119,10 +1122,20 @@ function AliasesModal({
           <div className="text-sm font-medium">Kind</div>
           <RadioGroup value={kind} onChange={(v) => setKind(v ?? "proxy")} className="gap-2">
             <Radio value="proxy">
-              <Radio.Content>Proxy to a service port</Radio.Content>
+              <Radio.Content>
+                <Radio.Control>
+                  <Radio.Indicator />
+                </Radio.Control>
+                Proxy to a service port
+              </Radio.Content>
             </Radio>
             <Radio value="static">
-              <Radio.Content>Static files (docroot)</Radio.Content>
+              <Radio.Content>
+                <Radio.Control>
+                  <Radio.Indicator />
+                </Radio.Control>
+                Static files (docroot)
+              </Radio.Content>
             </Radio>
           </RadioGroup>
 
@@ -1135,13 +1148,28 @@ function AliasesModal({
                 className="gap-2"
               >
                 <Radio value="public-site">
-                  <Radio.Content>Public site (12000+id)</Radio.Content>
+                  <Radio.Content>
+                    <Radio.Control>
+                      <Radio.Indicator />
+                    </Radio.Control>
+                    Public site (12000+id)
+                  </Radio.Content>
                 </Radio>
                 <Radio value="private-app">
-                  <Radio.Content>Private app (13000+id)</Radio.Content>
+                  <Radio.Content>
+                    <Radio.Control>
+                      <Radio.Indicator />
+                    </Radio.Control>
+                    Private app (13000+id)
+                  </Radio.Content>
                 </Radio>
                 <Radio value="hermes-webui">
-                  <Radio.Content>Hermes WebUI (11000+id)</Radio.Content>
+                  <Radio.Content>
+                    <Radio.Control>
+                      <Radio.Indicator />
+                    </Radio.Control>
+                    Hermes WebUI (11000+id)
+                  </Radio.Content>
                 </Radio>
               </RadioGroup>
             </>
@@ -1160,10 +1188,20 @@ function AliasesModal({
           <div className="text-sm font-medium">Access</div>
           <RadioGroup value={access} onChange={(v) => setAccess(v ?? "public")} className="gap-2">
             <Radio value="public">
-              <Radio.Content>Public — &lt;label&gt;.base (app handles its own auth)</Radio.Content>
+              <Radio.Content>
+                <Radio.Control>
+                  <Radio.Indicator />
+                </Radio.Control>
+                Public — &lt;label&gt;.base (app handles its own auth)
+              </Radio.Content>
             </Radio>
             <Radio value="private">
-              <Radio.Content>Private — &lt;label&gt;.users.base (app session required)</Radio.Content>
+              <Radio.Content>
+                <Radio.Control>
+                  <Radio.Indicator />
+                </Radio.Control>
+                Private — &lt;label&gt;.users.base (app session required)
+              </Radio.Content>
             </Radio>
           </RadioGroup>
 
