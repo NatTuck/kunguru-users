@@ -51,13 +51,16 @@ Per-zone, root:root 0600 shell env file (matches `/etc/bifrost/env`):
 
 ```sh
 # /etc/letsencrypt/secrets/kunguru.net.env
-JOKER_API_MODE=SVC
-JOKER_USERNAME=<per-domain DynDNS username>
-JOKER_PASSWORD=<per-domain DynDNS password>
+JOKER_USERNAME=<Dynamic DNS Authentication username>
+JOKER_PASSWORD=<Dynamic DNS Authentication password>
 ```
 
-Enable "Dynamic DNS active" for the zone in the Joker console to obtain the
-username/password.
+In the Joker dashboard: **DNS** next to the zone → activate **Dynamic DNS** if
+it is not already active → note the **"Dynamic DNS Authentication"** username
+and password (shown **only once per domain**; re-activate to regenerate if lost).
+The hook POSTs to Joker's `https://svc.joker.com/nic/replace`; wrong credentials
+come back as `HTTP 401 badauth`. (`JOKER_API_MODE=SVC` is a lego-ism and is not
+used here.)
 
 ## First issue (runbook)
 

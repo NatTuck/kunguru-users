@@ -53,7 +53,7 @@ label="_acme-challenge"
 # cleanup clears the label; add sets the single value.
 [[ "$action" == "rm" ]] && value=""
 
-resp="$(curl -fsS --max-time 30 -X POST "$endpoint" \
+resp="$(curl -sS --max-time 30 -w $'\n%{http_code}' -X POST "$endpoint" \
   --data-urlencode "username=${JOKER_USERNAME}" \
   --data-urlencode "password=${JOKER_PASSWORD}" \
   --data-urlencode "zone=${zone}" \
@@ -64,13 +64,16 @@ resp="$(curl -fsS --max-time 30 -X POST "$endpoint" \
   echo "joker-hook: POST to ${endpoint} failed" >&2
   exit 1
 }
+code="${resp##*$'\n'}"
+body="${resp%$'\n'*}"
 
-# Joker returns "OK: ..." on success, or a documented error token (badauth,
-# nohost, !yours, ...) otherwise.
-case "$resp" in
-  OK*) echo "joker-hook: ${action} TXT ${label}.${zone} -> ${resp}" ;;
-  *) echo "joker-hook: Joker error: ${resp}" >&2; exit 1 ;;
-esac
+# Joker answers 200 with "OK: ..." on success; errors are an HTTP status plus a
+# token: badauth (bad Dynamic-DNS credentials), nohost, !yours, ...
+if [[ "$code" != "200" || "$body" != OK* ]]; then
+  echo "joker-hook: Joker rejected ${action} ${label}.${zone}: HTTP ${code}: ${body}" >&2
+  exit 1
+fi
+echo "joker-hook: ${action} TXT ${label}.${zone} -> ${body}"
 
 # certbot's manual plugin validates immediately after the hook returns (it has
 # no propagation-wait option, unlike the DNS plugins). Wait so the record is
