@@ -29,7 +29,6 @@ export interface InstanceConfig {
   cookieDomain: string;
   acmeEmail: string;
   sitesCert: string;
-  extraCertHosts: string[];
   gatewayWgIp: string;
   snikketHost: string;
   gatewayHost: string;
@@ -99,15 +98,6 @@ function validate(raw: unknown, source: string): InstanceConfig {
   const sshUser =
     typeof r.sshUser === "string" && r.sshUser.trim() ? r.sshUser.trim() : "kunguru";
 
-  let extraCertHosts: string[] = [];
-  if (r.extraCertHosts !== undefined) {
-    if (!Array.isArray(r.extraCertHosts) || r.extraCertHosts.some((h) => typeof h !== "string")) {
-      problems.push(`"extraCertHosts" must be an array of strings`);
-    } else {
-      extraCertHosts = (r.extraCertHosts as string[]).map((h) => h.trim()).filter(Boolean);
-    }
-  }
-
   const llmRaw = r.llm;
   const llm = { apiUrl: "", baseUrl: "", providers: [] as string[], model: "" };
   if (typeof llmRaw !== "object" || llmRaw === null) {
@@ -168,7 +158,6 @@ function validate(raw: unknown, source: string): InstanceConfig {
     cookieDomain,
     acmeEmail,
     sitesCert,
-    extraCertHosts,
     gatewayWgIp,
     snikketHost,
     gatewayHost,

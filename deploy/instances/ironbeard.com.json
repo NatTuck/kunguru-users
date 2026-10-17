@@ -3,7 +3,6 @@
   "cookieDomain": "users.ironbeard.com",
   "acmeEmail": "nat@ferrus.net",
   "sitesCert": "kunguru-sites",
-  "extraCertHosts": ["users.ironbeard.com", "llm.ironbeard.com"],
   "gatewayWgIp": "10.0.0.1",
   "snikketHost": "otter.ferrus.net",
   "gatewayHost": "otter.ferrus.net",

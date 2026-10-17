@@ -2,9 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getDb, getHostByName, listAliases, listSiteUsers } from "./db";
 import {
-  ACME_EMAIL,
   BASE_DOMAIN,
-  EXTRA_CERT_HOSTS,
   GATEWAY_HOST_NAME,
   SCRIPTS_DIR,
   SITES_CERT_NAME,
@@ -51,9 +49,7 @@ export async function reconcileUserSites(): Promise<ReconcileResult> {
     env: {
       KUNGURU_BASE_DOMAIN: BASE_DOMAIN,
       KUNGURU_ROUTES: JSON.stringify(routes),
-      KUNGURU_ACME_EMAIL: ACME_EMAIL,
       KUNGURU_SITES_CERT: SITES_CERT_NAME,
-      KUNGURU_EXTRA_HOSTS: EXTRA_CERT_HOSTS,
       KUNGURU_AUTH_TARGET: `127.0.0.1:${config.runtime.port}`,
     },
     timeoutMs: 300_000,

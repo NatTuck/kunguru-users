@@ -35,14 +35,8 @@ export const GATEWAY_HOST_NAME = config.gatewayHost;
 // header, so it must match the gateway's VPN IP.
 export const GATEWAY_WG_IP = config.gatewayWgIp;
 
-// ACME contact + certificate name for the single combined per-user sites cert.
-export const ACME_EMAIL = config.acmeEmail;
+// ACME contact + certificate name for the shared per-user sites cert.
 export const SITES_CERT_NAME = config.sitesCert;
-
-// Extra (non-per-user) hostnames to fold into the combined sites certificate,
-// so one certbot cert covers the app + Bifrost + per-user/alias hosts. The
-// vhosts for these names are static (bootstrap/deploy), not rendered here.
-export const EXTRA_CERT_HOSTS = config.extraCertHosts.join(" ");
 
 // Deterministic per-user service ports (`base + users.id`).
 export const PORT_HERMES_WEBUI = 11000;

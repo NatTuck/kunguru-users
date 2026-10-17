@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # ensure-user-sites.sh  (run as root on the gateway, via the app transport)
 #
-# Renders the per-user nginx reverse-proxy routes plus a single combined
-# Let's Encrypt certificate, then reloads nginx. Driven by the app:
+# Renders the per-user nginx reverse-proxy routes and reloads nginx. Driven by
+# the app:
 #
 #   KUNGURU_BASE_DOMAIN  e.g. ironbeard.com
 #   KUNGURU_ROUTES       JSON array of {hostname, port, access, upstream, service}
-#   KUNGURU_ACME_EMAIL   certbot contact (required to issue/renew)
-#   KUNGURU_SITES_CERT   certbot --cert-name (default kunguru-sites)
+#   KUNGURU_SITES_CERT   cert name (default kunguru-sites)
 #   KUNGURU_AUTH_TARGET  host:port of the app's /internal/auth (127.0.0.1:3030)
 #
 # Slots (see server/sites.ts):
@@ -15,16 +14,16 @@
 #   <user>.users.<base>         -> private (auth_request -> Remote-User)
 #   <user>.<base>               -> public
 #
-# Idempotent: rewrites the map + vhosts and (re)issues the combined cert with
-# every current hostname as a SAN.
+# The certificate is NOT managed here. It is a fixed wildcard pair
+# (*.<base>, *.users.<base>) issued once and renewed by certbot.timer -- see
+# scripts/nginx/acme/. This script only renders vhosts, so adding users or
+# aliases never re-issues a certificate.
 set -euo pipefail
 
 : "${KUNGURU_BASE_DOMAIN:?missing KUNGURU_BASE_DOMAIN}"
 routes_json="${KUNGURU_ROUTES:-[]}"
-acme_email="${KUNGURU_ACME_EMAIL:-}"
 cert_name="${KUNGURU_SITES_CERT:-kunguru-sites}"
 auth_target="${KUNGURU_AUTH_TARGET:-127.0.0.1:3030}"
-extra_hosts="${KUNGURU_EXTRA_HOSTS:-}"
 
 base="$KUNGURU_BASE_DOMAIN"
 private="users.${base}"
@@ -42,17 +41,16 @@ mkdir -p "$webroot"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-python3 - "$routes_json" "$base" "$private" "$cert_name" "$auth_target" "$tmp" "$extra_hosts" <<'PY'
+python3 - "$routes_json" "$base" "$private" "$cert_name" "$auth_target" "$tmp" <<'PY'
 import json, os, sys
 routes_json, base, private, cert_name, auth_target, tmp = sys.argv[1:7]
-extra_hosts = sys.argv[7] if len(sys.argv) > 7 else ""
 webroot = "/var/www/certbot"
 cert_dir = "/etc/letsencrypt/live/" + cert_name
 try:
     routes = json.loads(routes_json)
 except json.JSONDecodeError:
     routes = []
-hosts = sorted({r["hostname"] for r in routes if r.get("hostname")} | set(extra_hosts.split()))
+hosts = sorted({r["hostname"] for r in routes if r.get("hostname")})
 
 map_lines = [
     "# Managed by kunguru-users (scripts/nginx/ensure-user-sites.sh).",
@@ -187,31 +185,20 @@ if [[ "$hosts_count" -eq 0 ]]; then
   exit 0
 fi
 
-# 1) HTTP-only config so certbot can solve HTTP-01 for the new hostnames.
-install -m 0644 "$tmp/sites-http.conf" "$site"
-[[ -e "$site_link" ]] || ln -s "$site" "$site_link"
-nginx -t
-systemctl reload nginx
-
-# 2) One combined certificate covering every current hostname.
-if [[ -z "$acme_email" ]]; then
-  echo "warning: KUNGURU_ACME_EMAIL unset; skipping certbot (HTTP only)" >&2
-elif ! command -v certbot >/dev/null; then
-  echo "warning: certbot not installed; serving HTTP only" >&2
-else
-  cert_args=()
-  while IFS= read -r h; do [[ -n "$h" ]] && cert_args+=(-d "$h"); done < "$tmp/hosts.txt"
-  certbot certonly --webroot -w "$webroot" --cert-name "$cert_name" --expand \
-    --keep-until-expiring -n --agree-tos -m "$acme_email" "${cert_args[@]}" || \
-    echo "warning: certbot failed; serving HTTP only" >&2
-fi
-
-# 3) Full vhost once the certificate exists.
+# The certificate is a fixed wildcard pair (*.<base>, *.users.<base>) issued
+# once and renewed by certbot.timer (see scripts/nginx/acme/). Render the HTTPS
+# vhost when it is present; otherwise fall back to HTTP-only so the app stays
+# reachable while the operator issues it.
 if [[ -f "${cert_dir}/fullchain.pem" && -f "${cert_dir}/privkey.pem" ]]; then
   install -m 0644 "$tmp/sites-full.conf" "$site"
+  [[ -e "$site_link" ]] || ln -s "$site" "$site_link"
   nginx -t
   systemctl reload nginx
   echo "[ok] per-user sites reconciled (${hosts_count} hostnames, cert ${cert_name})"
 else
-  echo "warning: no certificate at ${cert_dir}; HTTPS vhost not enabled" >&2
+  install -m 0644 "$tmp/sites-http.conf" "$site"
+  [[ -e "$site_link" ]] || ln -s "$site" "$site_link"
+  nginx -t
+  systemctl reload nginx
+  echo "warning: no certificate at ${cert_dir}; serving HTTP only -- run scripts/nginx/acme/ensure-sites-cert.sh" >&2
 fi

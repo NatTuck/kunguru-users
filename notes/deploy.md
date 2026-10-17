@@ -79,18 +79,43 @@ journal. Record it, then log in at the public URL. If it is ever lost:
 On the gateway host, as root — nginx already owns 80/443 here. `deploy/nginx-users.conf`
 is a **template**: it uses placeholders nginx rejects, so an unfilled copy fails
 `nginx -t`. Fill them from the instance config (`deploy/instances/<instance>.json`:
-`domain` and `runtime.port`).
+`domain`, `runtime.port`, `sitesCert`).
 
 ```sh
-# <base> = instance domain, <port> = runtime.port (default 3030)
-sed -e 's/<base>/kunguru.net/g' -e 's/<port>/3030/g' \
+# <base> = instance domain, <port> = runtime.port (default 3030),
+# <cert> = sitesCert (default kunguru-sites)
+sed -e 's/<base>/kunguru.net/g' -e 's/<port>/3030/g' -e 's/<cert>/kunguru-sites/g' \
   deploy/nginx-users.conf > /etc/nginx/sites-available/kunguru-users
 ln -s /etc/nginx/sites-available/kunguru-users /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
-certbot --nginx -d users.<base> --agree-tos -m <email> -n
 ```
 
-DNS must point `users.<base>` at the gateway's public IP before certbot runs.
+DNS must point `users.<base>` (and the wildcards below) at the gateway's public
+IP before the certificate can be issued.
+
+### 5a. TLS — the shared wildcard certificate
+
+The app vhost, the Bifrost vhost, and the rendered per-user sites vhost all reuse
+one cert (`sitesCert`): a fixed wildcard pair issued **once** and renewed by
+`certbot.timer`. Because the SAN set never changes, adding users or aliases never
+re-issues a certificate.
+
+```
+*.kunguru.net          users. (app), llm. (Bifrost), <user>., public aliases
+*.users.kunguru.net    <user>.users., <user>-agent.users., private aliases
+```
+
+Issued via Joker DNS-01 (needs the per-zone DynDNS credentials file):
+
+```sh
+sudo bash scripts/nginx/acme/install.sh
+sudo KUNGURU_BASE_DOMAIN=kunguru.net KUNGURU_ACME_EMAIL=<email> \
+  /usr/local/lib/kunguru/acme/ensure-sites-cert.sh
+```
+
+See `scripts/nginx/acme/README.md` for the credentials file and the DNS-01
+rationale. The apex `kunguru.net` / `www.kunguru.net` keeps its own cert and
+vhost; it is deliberately not folded in.
 
 ## 6. Verify
 
@@ -132,7 +157,8 @@ On hosts without mise (`drongo`), use the app's bundled Node toolchain instead:
 `PATH="$HOME/.hermes/node/bin:$PATH" pnpm …`.
 
 After a change that affects per-user site routing or the WebUI hostname
-(`server/sites.ts`), reconcile nginx + the combined cert:
+(`server/sites.ts`), reconcile nginx (this no longer touches certificates — the
+shared wildcard cert is fixed and renewed by `certbot.timer`):
 
 ```sh
 pnpm sites-reconcile              # or: mise exec -- pnpm sites-reconcile
