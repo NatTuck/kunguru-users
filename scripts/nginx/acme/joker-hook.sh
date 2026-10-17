@@ -71,3 +71,10 @@ case "$resp" in
   OK*) echo "joker-hook: ${action} TXT ${label}.${zone} -> ${resp}" ;;
   *) echo "joker-hook: Joker error: ${resp}" >&2; exit 1 ;;
 esac
+
+# certbot's manual plugin validates immediately after the hook returns (it has
+# no propagation-wait option, unlike the DNS plugins). Wait so the record is
+# visible at Joker's authoritative nameservers before ACME asks for it.
+if [[ "$action" == "add" ]]; then
+  sleep "${KUNGURU_JOKER_PROPAGATION_SECONDS:-60}"
+fi

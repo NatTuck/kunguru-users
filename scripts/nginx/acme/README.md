@@ -33,6 +33,10 @@ then need to accumulate values per label (as `acme.sh`'s `dns_joker.sh` does).
 This is also why the third-party `certbot-dns-joker` plugin fails for
 apex+wildcard.
 
+certbot's manual plugin validates immediately after the hook returns, so the
+hook sleeps `KUNGURU_JOKER_PROPAGATION_SECONDS` (default 60) after setting a
+record to let it become visible at Joker's nameservers.
+
 ## Files
 
 | File | Purpose |
