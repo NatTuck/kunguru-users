@@ -132,6 +132,11 @@ Verification per tenant:
 - **`model.default`: the app/DB wins whenever the app writes the config**
   (revert + warn). Do **not** rewrite the config on extra runs just to enforce
   consistency — converge writes config only when it is actually doing work.
+- **Channel assertion: record `stable` only on the explicit update action**,
+  never on ordinary converges. Recording it on every converge would override a
+  tenant's channel choice and flip their own `hermes update` from forward-only
+  to "move back to stable" — the same rewrite-just-to-enforce pattern rejected
+  above.
 
 ## Already implemented (verify before relying on the plan)
 
@@ -142,14 +147,3 @@ Verification per tenant:
 ## Open questions
 
 1. `plugins.enabled`: merge to preserve tenant plugins — confirm.
-2. **Channel assertion**: record `stable` on every converge, or only on the
-   explicit update action? Tradeoff: recording it on every converge guarantees
-   the fleet standardises on the next update, but silently overrides a tenant's
-   deliberate channel choice on every repair/provision and flips their own
-   `hermes update` from forward-only to "move back to stable". Recording it only
-   on the explicit update action keeps converges non-destructive and respects
-   tenant choice, at the cost of drift between standardisations. Given the
-   `model.default` principle (don't rewrite config just to enforce consistency),
-   the consistent choice is **only on the explicit update action** — or a middle
-   ground: record only when no channel record exists (default the unconfigured,
-   never override an existing choice).
