@@ -1,0 +1,143 @@
+# Cleanup: standardize on stable + PM, retire the legacy venv
+
+Status: PLAN (not yet implemented). Scope: the kunguru.net deployment
+(swan tenants), but the changes belong in this repo so any deployment can
+converge.
+
+## Goal
+
+1. Force every tenant's Hermes agent onto the `stable` update channel.
+2. Stop using the pre-PM in-tree venv and move every tenant fully onto the
+   PM-managed environment.
+3. Route all of this through the app's provision / reprovision path (not
+   ad-hoc scripts), and make that path **not destroy intentional tenant
+   config**.
+
+## Current state (observed 2026-10-11)
+
+Agents (all on the `stable` *channel*, but different commits because a
+default-channel install is forward-only):
+
+| commit | agent | tenants |
+| --- | --- | --- |
+| `e4d8642` (+768) | stable release `v0.21.6` | jeff |
+| `a0a4992` (+771) | pre-release main tip | nica |
+| `835c3dd` (+774) | pre-release main tip | ndinda, gmhart, nerdscripts, wangu, nat |
+
+WebUI: all tenants on `master` `81e1e7f`.
+
+Venvs:
+- The launcher (`~/.local/bin/hermes` -> `hermes-agent/.hermes/bin/hermes`)
+  and every `hermes-gateway` unit already run on **PM**.
+- jeff has **only** PM; his WebUI unit points at the PM interpreter.
+- The other 6 still have the pre-PM in-tree venv
+  (`~/.hermes/hermes-agent/venv`, a real dir from the Sep-15/Aug installs),
+  and their **WebUI units point at it**. The updater never removes it.
+
+## Mechanics that matter
+
+- **Channel storage** is per install, in `config.yaml` under
+  `update.installs.<sha16>.channel` (`hermes_cli/update_channel.py`).
+- Unconfigured official checkouts default to `stable` and are
+  **forward-only**: a checkout newer than the latest release waits for the
+  next release instead of moving.
+- `hermes update --set-channel <x>` is **metadata-only** (returns before any
+  side effects). Forcing stable is therefore two steps: record the channel,
+  then a separate `hermes update --yes` (which, once a record exists, is no
+  longer forward-only and *will* move a newer checkout back to the stable
+  release).
+- `scripts/webui/ensure.sh` already prefers PM via `hermes_python()`, so any
+  reprovision repoints the WebUI unit to PM.
+- `startStandardAccountProvision` (Provision + Repair) runs
+  `account -> snikket -> snikket-agent -> hermes -> webui` and never passes
+  `HERMES_UPDATE`, so no agent update happens today.
+
+## Intentional-config hazards found
+
+These are places the converge path currently clobbers tenant state:
+
+1. **`plugins.enabled` is replaced wholesale** — `scripts/hermes/ensure.sh`
+   sets it to exactly `["hermes-xmpp-plugin"]`. Any plugin a tenant enabled
+   is dropped. Fix: merge (read existing list, ensure the XMPP plugin is
+   present, write back).
+2. **`kunguru-sites` skill is overwritten every converge** — `SKILL.md` and
+   `references/local.md` are written unconditionally. Tenant edits are lost.
+   Fix: hash-guard — only rewrite when the on-disk file matches the last
+   app-written content (sidecar hash) or is absent; otherwise back up and
+   warn.
+3. **`model.default` resets to the app DB value** — a model the user changed
+   in the WebUI (which writes `config.yaml`) is reverted. Decide: app-as-
+   authority (revert + warn) or reconcile the DB from `config.yaml`.
+4. **`providers.only_configured true`** is applied every run and hides
+   providers a user configured intentionally. Keep as fleet policy or
+   reconcile.
+5. `.env` (XMPP keys) and `hermes config set` of discrete keys are already
+   merge-safe.
+6. **Removing the legacy venv** could break user-owned scripts/cron that
+   reference the path. Guard by checking references; move aside rather than
+   hard-delete.
+
+## Plan
+
+### 1. `scripts/hermes/ensure.sh` hardening
+
+- On the `HERMES_UPDATE` path, record the channel before updating:
+  `hermes update --set-channel stable` (idempotent), then
+  `hermes update --yes`.
+- Keep the current update -> WebUI repo/deps/unit-repoint/restart sequence.
+- After update + WebUI repoint + services verified active, **retire the
+  legacy venv**:
+  - Check the user's `systemd --user` units, crontab, and obvious user files
+    for references to `~/.hermes/hermes-agent/venv`.
+  - If clear, move it aside to `venv.retired-<ts>` (delete later); else skip
+    with a warning.
+- Preservation fixes: merge `plugins.enabled`; hash-guard the
+  `kunguru-sites` writes.
+
+### 2. App: first-class update/standardize action
+
+- Thread an `update` flag through `startStandardAccountProvision` -> `runJob`
+  that exports `HERMES_UPDATE=1` for the `hermes` step, or add a dedicated
+  lean `agent-update` profile (`hermes` + `webui` steps only).
+- New admin endpoints: `POST /api/users/:id/update` and a fleet-wide
+  `POST /api/users/update` (job-tracked like provisioning), plus UI buttons
+  ("Update" per user and/or "Update & standardize" fleet-wide).
+- Pass per-user `HERMES_MODEL` (from the DB) and `KUNGURU_*` (to keep
+  `references/local.md` current); omit `XMPP_*` / `HERMES_LLM_API_KEY` so
+  credentials and XMPP are untouched.
+- Serialize fleet runs (one tenant at a time; ~10 min each).
+
+### 3. Config reconciliation
+
+Per the decisions below (model authority, `only_configured`, skill
+preservation).
+
+### 4. Execute (after implementation)
+
+- Deploy the app to drongo.
+- Run the standardize action for all tenants, sequentially.
+
+Verification per tenant:
+- `config.yaml` has `update.installs.<sha16>.channel = stable`.
+- Agent at the stable release (`v0.21.6`, `e4d8642`).
+- WebUI unit `ExecStart` / `HERMES_WEBUI_PYTHON` -> PM interpreter.
+- Legacy `~/.hermes/hermes-agent/venv` retired.
+- `hermes-gateway` + `hermes-webui` active, `NRestarts=0`.
+- Tenant config preserved (plugins list, skill edits, model choice).
+
+## Open questions
+
+1. Trigger surface: dedicated per-user "Update" + fleet "Update all" admin
+   action, or fold into the existing **Repair** button?
+2. Legacy venv: move aside (`venv.retired-<ts>`) or hard-delete? Is removing
+   it acceptable even though a tenant could reference it in their own
+   scripts?
+3. `model.default`: app DB authoritative (revert + warn), or reconcile the DB
+   from `config.yaml`?
+4. `plugins.enabled`: merge (preserve other plugins) — confirm.
+5. `kunguru-sites` preservation: hash-guard (skip + warn if tenant edited) or
+   keep force-overwrite?
+6. Channel assertion: record `stable` on every converge, or only on the
+   explicit update action?
+7. Store/report agent channel + version + venv kind for fleet visibility
+   (job output and/or a DB column)?

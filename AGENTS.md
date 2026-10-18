@@ -14,6 +14,11 @@ It provides both user management and user authentication.
 - Server data access for the API lives behind the `server/db.ts` schema/helpers and the
   `server/routes.ts` express router.
 
+## Deployment conventions
+
+- If a deployment has both a gateway and a user server, then Hermes instances
+run only on the *user* server.
+
 ## Deploying
 
 - `git clone https://github.com/NatTuck/kunguru-users.git` as the kunguru user
