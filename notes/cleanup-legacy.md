@@ -74,8 +74,8 @@ These are places the converge path currently clobbers tenant state:
 5. `.env` (XMPP keys) and `hermes config set` of discrete keys are already
    merge-safe.
 6. **Removing the legacy venv** could break user-owned scripts/cron that
-   reference the path. Guard by checking references; move aside rather than
-   hard-delete.
+   reference the path. Guard by checking references, then **hard-delete**
+   (decided: the legacy venv is obsolete; we have been running without it).
 
 ## Plan
 
@@ -89,8 +89,8 @@ These are places the converge path currently clobbers tenant state:
   legacy venv**:
   - Check the user's `systemd --user` units, crontab, and obvious user files
     for references to `~/.hermes/hermes-agent/venv`.
-  - If clear, move it aside to `venv.retired-<ts>` (delete later); else skip
-    with a warning.
+  - If clear, **hard-delete** it (the legacy venv is obsolete); else skip with
+    a warning.
 - Preservation fixes: merge `plugins.enabled`; hash-guard the
   `kunguru-sites` writes.
 
@@ -125,19 +125,31 @@ Verification per tenant:
 - `hermes-gateway` + `hermes-webui` active, `NRestarts=0`.
 - Tenant config preserved (plugins list, skill edits, model choice).
 
+## Decisions (2026-10-17)
+
+- **Legacy venv: hard-delete** after the reference check. It is obsolete and we
+  have been running without it.
+- **`model.default`: the app/DB wins whenever the app writes the config**
+  (revert + warn). Do **not** rewrite the config on extra runs just to enforce
+  consistency — converge writes config only when it is actually doing work.
+
+## Already implemented (verify before relying on the plan)
+
+- Per-user **Update** + fleet **Update all agents** actions.
+- `kunguru-sites` hash-guard (`write_guarded` + sidecar hashes).
+- `accounts.agent_channel` / `agent_version` / `venv_kind` + user-list display.
+
 ## Open questions
 
-1. Trigger surface: dedicated per-user "Update" + fleet "Update all" admin
-   action, or fold into the existing **Repair** button?
-2. Legacy venv: move aside (`venv.retired-<ts>`) or hard-delete? Is removing
-   it acceptable even though a tenant could reference it in their own
-   scripts?
-3. `model.default`: app DB authoritative (revert + warn), or reconcile the DB
-   from `config.yaml`?
-4. `plugins.enabled`: merge (preserve other plugins) — confirm.
-5. `kunguru-sites` preservation: hash-guard (skip + warn if tenant edited) or
-   keep force-overwrite?
-6. Channel assertion: record `stable` on every converge, or only on the
-   explicit update action?
-7. Store/report agent channel + version + venv kind for fleet visibility
-   (job output and/or a DB column)?
+1. `plugins.enabled`: merge to preserve tenant plugins — confirm.
+2. **Channel assertion**: record `stable` on every converge, or only on the
+   explicit update action? Tradeoff: recording it on every converge guarantees
+   the fleet standardises on the next update, but silently overrides a tenant's
+   deliberate channel choice on every repair/provision and flips their own
+   `hermes update` from forward-only to "move back to stable". Recording it only
+   on the explicit update action keeps converges non-destructive and respects
+   tenant choice, at the cost of drift between standardisations. Given the
+   `model.default` principle (don't rewrite config just to enforce consistency),
+   the consistent choice is **only on the explicit update action** — or a middle
+   ground: record only when no channel record exists (default the unconfigured,
+   never override an existing choice).
