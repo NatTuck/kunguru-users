@@ -899,7 +899,9 @@ export function deleteStaticSite(db: Database.Database, id: number): void {
 
 // Static sites whose owner is an enabled account on an enabled host: the set
 // that gets a gateway route. `ssh_target` is the host the gateway forwards to
-// (the owner's host, where the static nginx serves the docroot).
+// (the owner's host, where the static nginx serves the docroot). An owner with
+// accounts on several hosts yields one row per host; multi-host accounts are
+// deferred (see notes/groups-and-apps.md §14).
 export interface StaticSiteHostRow extends StaticSite {
   owner_name: string;
   owner_enabled: number;

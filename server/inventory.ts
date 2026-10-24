@@ -19,8 +19,13 @@ export const SCRIPTS_DIR =
 // Host name that runs Snikket (target for the snikket profile step).
 export const SNIKKET_HOST_NAME = config.snikketHost;
 
-// Public DNS base / private subtree for per-user service hostnames.
+// Public DNS base for every account/site hostname.
 export const BASE_DOMAIN = config.domain;
+
+// The login app's own host (`users.<base>`). Named `cookieDomain` in the
+// instance config for historical reasons: the session cookie used to be scoped
+// here, and is now scoped to BASE_DOMAIN (see COOKIE_DOMAIN). Still the host
+// used for the login redirect and the WebUI logout URL.
 export const PRIVATE_DOMAIN = config.cookieDomain;
 
 // Session cookie Domain: the base domain, so the gateway sees the session on

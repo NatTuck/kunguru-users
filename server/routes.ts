@@ -1085,7 +1085,8 @@ async function createSiteFor(
   res.status(201).json({ site: siteView(site, owner.username), sites });
 }
 
-// A site may be managed by its owner or by an admin.
+// A site may be managed by its owner or by an admin. Group-owned sites are
+// admin-only for now; Phase 3 adds member management.
 function siteManageable(
   site: StaticSite,
   user: SessionUser | undefined,
@@ -1127,7 +1128,8 @@ api.post("/users/:id/static-sites", requireAuth, requireAdmin, async (req, res) 
   await createSiteFor(res, owner, (req.body ?? {}) as Record<string, unknown>);
 });
 
-// Self-service: the signed-in user's own static sites.
+// Self-service: the signed-in user's own static sites. (Phase 3 adds sites
+// owned by the user's groups.)
 api.get("/me/static-sites", requireAuth, (_req, res) => {
   const user = currentUser(res);
   if (!user) {

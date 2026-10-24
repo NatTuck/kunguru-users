@@ -88,6 +88,8 @@ function validate(raw: unknown, source: string): InstanceConfig {
   const xmppDomain = str(r, "xmppDomain", problems);
 
   // cookieDomain is optional; when absent it derives from domain (no literal).
+  // Historical name: it is the login app's own host (`users.<domain>`), not the
+  // session cookie's scope (that is `domain`).
   const cookieDomain =
     typeof r.cookieDomain === "string" && r.cookieDomain.trim()
       ? r.cookieDomain.trim()

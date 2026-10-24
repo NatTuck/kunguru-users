@@ -200,9 +200,9 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
           env.XMPP_HOME_CHANNEL = `${user.username}@${XMPP_DOMAIN}`;
           env.XMPP_HOST = XMPP_DOMAIN;
         }
-        // Tenant site-deployment facts for the kunguru-sites skill: the three
-        // slot hostnames/ports (12000/13000/11000 + id; see server/sites.ts)
-        // and the bind/trusted-proxy addresses for private slots.
+        // Tenant site-deployment facts for the kunguru-sites skill: the two app
+        // slots + WebUI (12000/13000/11000 + id; see server/sites.ts) and the
+        // bind/trusted-proxy addresses.
         env.KUNGURU_USER_ID = String(user.id);
         if (BASE_DOMAIN) env.KUNGURU_BASE_DOMAIN = BASE_DOMAIN;
         env.KUNGURU_GATEWAY_WG_IP = GATEWAY_WG_IP;
@@ -216,7 +216,7 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         env.HERMES_MODEL = opts.model ?? HERMES_MODEL;
       }
       if (s.def.name === "webui") {
-        // Per-user WebUI on `<user>-agent.users.<base>`: bound to the address
+        // Per-account WebUI on `<account>-agent.<base>`: bound to the address
         // the gateway's nginx reaches (loopback when co-located), trusting only
         // the gateway as a proxy for the Remote-User header.
         const coLocated = s.host.ssh_target === "localhost";
