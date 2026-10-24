@@ -6,6 +6,7 @@ import { GuestOnly, RequireAdmin, RequireAuth } from "./guards";
 import Login from "./Login";
 import Layout from "./Layout";
 import Account from "./Account";
+import AdminGroupsPage from "./AdminGroupsPage";
 import GroupsPage from "./GroupsPage";
 import UsersPage from "./UsersPage";
 import XmppSetup from "./XmppSetup";
@@ -39,6 +40,14 @@ export default function App() {
         <Route path="/" element={<Account />} />
         <Route path="/groups" element={<GroupsPage />} />
         <Route path="/xmpp" element={<XmppSetup />} />
+        <Route
+          path="/admin/groups"
+          element={
+            <RequireAdmin>
+              <AdminGroupsPage />
+            </RequireAdmin>
+          }
+        />
         <Route
           path="/admin/users"
           element={

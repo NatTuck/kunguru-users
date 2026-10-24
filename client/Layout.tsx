@@ -29,9 +29,14 @@ export default function Layout() {
               Groups
             </NavLink>
             {user?.role === "admin" && (
-              <NavLink to="/admin/users" className={linkClass}>
-                Manage users
-              </NavLink>
+              <>
+                <NavLink to="/admin/users" className={linkClass}>
+                  Manage users
+                </NavLink>
+                <NavLink to="/admin/groups" className={linkClass}>
+                  Manage groups
+                </NavLink>
+              </>
             )}
           </nav>
           <div className="ml-auto flex items-center gap-3">

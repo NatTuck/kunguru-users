@@ -23,6 +23,9 @@ interface GroupsState {
   actionError: string | null;
   detail: GroupDetail | null;
   detailLoading: boolean;
+  adminGroups: GroupSummary[];
+  adminLoading: boolean;
+  adminError: string | null;
   load: () => Promise<void>;
   create: (name: string) => Promise<GroupProvisionInfo | null>;
   open: (id: number) => Promise<void>;
@@ -32,6 +35,8 @@ interface GroupsState {
   disable: (id: number) => Promise<void>;
   enable: (id: number) => Promise<void>;
   provision: (id: number) => Promise<GroupProvisionInfo | null>;
+  loadAdmin: () => Promise<void>;
+  transfer: (id: number, username: string) => Promise<CommandResult | null>;
   clearActionError: () => void;
 }
 
@@ -49,6 +54,9 @@ export const useGroupsStore = create<GroupsState>((set, getState) => ({
   actionError: null,
   detail: null,
   detailLoading: false,
+  adminGroups: [],
+  adminLoading: false,
+  adminError: null,
 
   load: async () => {
     set({ loading: true, listError: null });
@@ -210,6 +218,39 @@ export const useGroupsStore = create<GroupsState>((set, getState) => ({
       return data.provisioning;
     } catch (err) {
       set({ busy: false, actionError: await message(err, "failed to provision the group") });
+      return null;
+    }
+  },
+
+  loadAdmin: async () => {
+    set({ adminLoading: true, adminError: null });
+    try {
+      const data = await get<{ groups: GroupSummary[]; limit: number }>(
+        "/api/admin/groups",
+      );
+      set({ adminGroups: data.groups, adminLoading: false });
+    } catch (err) {
+      set({
+        adminLoading: false,
+        adminError: await message(err, "failed to load groups"),
+      });
+    }
+  },
+
+  transfer: async (id, username) => {
+    set({ busy: true, actionError: null });
+    try {
+      const data = await post<{
+        group: GroupSummary;
+        members: GroupDetail["members"];
+        membership: CommandResult;
+      }>(`/api/groups/${id}/owner`, { username });
+      set({ busy: false });
+      await getState().loadAdmin();
+      await getState().load();
+      return data.membership;
+    } catch (err) {
+      set({ busy: false, actionError: await message(err, "failed to transfer ownership") });
       return null;
     }
   },
