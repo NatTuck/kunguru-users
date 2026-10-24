@@ -112,9 +112,16 @@ app.get("/internal/auth", (req, res) => {
     (req.headers["x-original-host"] as string | undefined) ?? req.headers.host;
   const db = getDb();
   const target = resolveAuthTarget(db, originalHost);
-  // Unknown host (or a disabled account/site whose route should be gone): no
-  // identity, no access.
-  if (!target || (target.kind === "account" && !target.account.enabled)) {
+  // Unknown host, or a disabled account/site whose route should be gone: no
+  // identity, no access. Check the disabled state here rather than trusting the
+  // route table to be current (reconcile may have failed).
+  const disabled =
+    target?.kind === "account"
+      ? !target.account.enabled
+      : target?.kind === "static"
+        ? !target.owner.enabled
+        : false;
+  if (!target || disabled) {
     res.status(403).end();
     return;
   }

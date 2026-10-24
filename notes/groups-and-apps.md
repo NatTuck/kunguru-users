@@ -180,19 +180,23 @@ User-server nginx (static sites):
 
 - Install nginx if missing; base config listens on the VPN/LAN address on the
   static port, `allow <gateway-wg-ip>; deny all;`, default server `404`,
-  `autoindex off`, `disable_symlinks on`.
+  `autoindex off`, `disable_symlinks on`, `server_tokens off`.
 - One `server` per static site: `server_name <label>.<base>`,
-  `root /home/<owner>/www/<label>`; `nginx -t` + reload after reconcile.
-- Managed by `scripts/nginx/ensure-user-static.sh` (new), run by the app on each
-  user server.
+  `root /home/<owner>/www/<label>`; `nginx -t` (with rollback) + reload after
+  reconcile.
+- Managed by `scripts/nginx/ensure-user-static.sh`, run by the app on each user
+  server; it also creates the directories and the `www-data` ACLs.
 
 Gateway:
 
 - Route map includes app/app-dev/webui hosts and static-site hosts
   (→ `<owner-host>:14000`); `auth_request` for `require_auth`; cookie strip;
-  `Host` preserved.
-- Gateway-local owners (the admin `kunguru`) can be served directly with a
-  `root` block.
+  WebSocket upgrade; `Host` preserved.
+- Gateway-local owners (the admin `kunguru`) are served directly with a `root`
+  block: a loopback listener would let any local process read a `require_auth`
+  site by sending the `Host` header directly.
+- A permanent redirect from the retired `.users.` hosts (needs the
+  `*.users.<base>` SAN).
 
 ---
 
@@ -259,6 +263,9 @@ Gateway:
 - **Static sites page**: my sites (owned), create ≤5 (label + source/served
   paths), `require_auth`, delete (route only; files retained), status.
 - **Account page**: app/app-dev/WebUI links; group apps; static sites.
+- App-slot `require_auth`/`require_auth_dev` are enforced by `/internal/auth`
+  but have **no UI yet**; set the columns directly until the self-service
+  toggle lands in Phase 3.
 - Admin: all groups, all static sites, disable/transfer.
 
 ---
@@ -398,7 +405,11 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
   behavior correct, app units restart/log.
 - Static sites: source `~/sites/<label>`, served `~/www/<label>`; user-server
   nginx serves 200; gateway forwards; `require_auth` gates; `www-data` can read;
-  symlink escape blocked; 5/owner cap.
+  symlink escape blocked; 5/owner cap; a gateway-local site is served by the
+  gateway vhost (no loopback listener); deleting the last site on a host removes
+  its listener; a failed host reconcile drops that host's gateway routes.
+- Auth edges: a **disabled** owner's static site is 403 (not just unrouted); the
+  retired `.users.` hosts redirect to the two-port hosts.
 - Identity: `Remote-User`/`Remote-Groups` on apps; cookie not visible to
   upstreams; anonymous optional; WebUI/require_auth redirect.
 - Groups: Linux user/group, home, membership, Hermes root profile + SOUL.md,

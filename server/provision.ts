@@ -42,7 +42,7 @@ import {
   XMPP_DOMAIN,
 } from "./bifrost";
 import { runRemote } from "./transport/run";
-import { reconcileUserSites } from "./nginx";
+import { reconcileSites } from "./nginx";
 
 export const STANDARD_ACCOUNT_PROFILE = "standard-account";
 // Lean standardize/upgrade: force the agent to the stable channel, update it,
@@ -404,10 +404,11 @@ async function runStandardAccountProvision(opts: {
     console.error(`provision job ${opts.jobId} failed:`, err);
   }
 
-  // Per-user site routes are derived from DB state; reconcile after every run
-  // so a new/updated account's hostnames appear. Failure is not fatal.
+  // Site routing (account hosts + every host's static listener) is derived
+  // from DB state; reconcile after every run so a new/updated account's
+  // hostnames and static sites appear. Failure is not fatal.
   try {
-    await reconcileUserSites();
+    await reconcileSites();
   } catch (err) {
     console.error(`site reconcile after job ${opts.jobId} failed:`, err);
   }

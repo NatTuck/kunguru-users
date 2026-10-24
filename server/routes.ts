@@ -60,7 +60,7 @@ import {
 import { tcpUp } from "./probe";
 import { reconcileSites } from "./nginx";
 import { refreshModelsAndRestartWebuis } from "./models";
-import { BASE_DOMAIN, PRIVATE_DOMAIN } from "./inventory";
+import { BASE_DOMAIN } from "./inventory";
 import {
   BIFROST_PROVIDERS,
   HERMES_MODEL,
@@ -364,14 +364,12 @@ api.post("/auth/password", requireAuth, async (req, res) => {
 
 // --- Public config ---
 // Domain names the SPA needs to build per-account tool URLs (`<account>.<base>`
-// app, `<account>-dev.<base>` app-dev, `<account>-agent.<base>` WebUI) and the
-// XMPP domain. `authHost` is the login app's own host (`users.<base>`). Public:
-// these are DNS names.
+// app, `<account>-dev.<base>` app-dev, `<account>-agent.<base>` WebUI, and
+// `<label>.<base>` static sites) and the XMPP domain. Public: these are DNS
+// names. The login app's own host is server-side only.
 api.get("/config", (_req, res) => {
   res.json({
     baseDomain: BASE_DOMAIN,
-    privateDomain: PRIVATE_DOMAIN,
-    authHost: PRIVATE_DOMAIN,
     xmppDomain: XMPP_DOMAIN,
   });
 });
@@ -483,6 +481,10 @@ api.post("/users", requireAuth, requireAdmin, async (req, res) => {
   }
 
   const db = getDb();
+  if (getStaticSiteByLabel(db, username)) {
+    res.status(409).json({ error: "username collides with a static-site label" });
+    return;
+  }
   const password = generatePassword();
   const hash = await hashPassword(password);
 
@@ -1049,6 +1051,14 @@ async function createSiteFor(
     return;
   }
   const db = getDb();
+  const account = getAccountForUser(db, owner.id);
+  if (!account || !account.host.enabled) {
+    res.status(400).json({
+      error:
+        "owner has no provisioned host account; provision the account before adding static sites",
+    });
+    return;
+  }
   const conflict = siteLabelConflict(db, label);
   if (conflict) {
     res.status(409).json({ error: conflict });
@@ -1110,6 +1120,7 @@ api.get("/users/:id/static-sites", requireAuth, requireAdmin, (req, res) => {
   }
   res.json({
     sites: listStaticSitesForOwner(db, id).map((s) => siteView(s, owner.username)),
+    limit: STATIC_SITE_LIMIT,
   });
 });
 

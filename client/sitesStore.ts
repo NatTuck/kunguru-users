@@ -9,9 +9,9 @@ interface SitesState {
   load: () => Promise<void>;
 }
 
-// Liveness of the signed-in user's public/private personal-app slots. Loaded on
-// demand from the account page; the page renders immediately and fills the
-// status in when this resolves.
+// Liveness of the signed-in user's app slots (app, app-dev) and managed WebUI.
+// Loaded on demand from the account page; the page renders immediately and
+// fills the status in when this resolves.
 export const useSitesStore = create<SitesState>((set) => ({
   sites: null,
   loading: false,

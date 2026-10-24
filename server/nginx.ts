@@ -34,13 +34,31 @@ export interface HostReconcileResult {
   output: string;
 }
 
+// Convention (also used by provisioning): a host whose ssh target is
+// `localhost` is the machine the app itself runs on — the gateway. Static sites
+// owned by accounts there are served by the gateway's own nginx from a docroot
+// instead of a loopback HTTP listener: a loopback listener would let any local
+// process (including a tenant shell) read a `require_auth` site by sending the
+// Host header directly.
+const LOCAL_SSH_TARGET = "localhost";
+
+export function isLocalSshTarget(sshTarget: string): boolean {
+  return sshTarget.trim() === LOCAL_SSH_TARGET;
+}
+
 /**
  * Reconcile the gateway's nginx routes from current DB state: the two app slots
- * and WebUI of every enabled account, plus every static site (forwarded to the
- * owner's host). Runs on the host that owns nginx. Idempotent; safe after any
- * user/account/site change.
+ * and WebUI of every enabled account, plus every static site owned on a remote
+ * host (forwarded to `<owner-host>:14000`). Static sites owned on the gateway
+ * itself are rendered as local docroot vhosts.
+ *
+ * `skipStaticHosts` drops the static routes for hosts whose listener failed to
+ * converge, so the gateway never forwards to a port that is not being served.
+ * Idempotent; safe after any user/account/site change.
  */
-export async function reconcileUserSites(): Promise<ReconcileResult> {
+export async function reconcileUserSites(opts: {
+  skipStaticHosts?: Set<string>;
+} = {}): Promise<ReconcileResult> {
   if (!BASE_DOMAIN) {
     return {
       ok: true,
@@ -54,7 +72,29 @@ export async function reconcileUserSites(): Promise<ReconcileResult> {
     throw new Error(`gateway host '${GATEWAY_HOST_NAME}' not configured`);
   }
 
-  const routes = siteRoutes(listSiteUsers(db), listStaticSiteHosts(db));
+  const accounts = listSiteUsers(db);
+  const sites = listStaticSiteHosts(db);
+  const localSites = sites.filter(
+    (s) =>
+      isLocalSshTarget(s.ssh_target) &&
+      !opts.skipStaticHosts?.has(s.ssh_target),
+  );
+  const remoteSites = sites.filter(
+    (s) =>
+      !isLocalSshTarget(s.ssh_target) && !opts.skipStaticHosts?.has(s.ssh_target),
+  );
+  const skippedHosts = sites.filter((s) =>
+    opts.skipStaticHosts?.has(s.ssh_target),
+  );
+
+  const routes = siteRoutes(accounts, remoteSites);
+  const local = localSites.map((s) => ({
+    hostname: staticSiteHost(s.label),
+    label: s.label,
+    owner: s.owner_name,
+    root: s.served_root,
+  }));
+
   const script = await readFile(
     join(SCRIPTS_DIR, "nginx/ensure-user-sites.sh"),
     "utf8",
@@ -66,6 +106,7 @@ export async function reconcileUserSites(): Promise<ReconcileResult> {
     env: {
       KUNGURU_BASE_DOMAIN: BASE_DOMAIN,
       KUNGURU_ROUTES: JSON.stringify(routes),
+      KUNGURU_LOCAL_SITES: JSON.stringify(local),
       KUNGURU_SITES_CERT: SITES_CERT_NAME,
       KUNGURU_AUTH_TARGET: `127.0.0.1:${config.runtime.port}`,
       // The login app's own host (`users.<base>`); require_auth hosts redirect
@@ -74,25 +115,31 @@ export async function reconcileUserSites(): Promise<ReconcileResult> {
     },
     timeoutMs: 300_000,
   });
-  return { ok: res.exitCode === 0, skipped: false, output: res.output };
+  const note =
+    skippedHosts.length > 0
+      ? `\nskipped ${skippedHosts.length} static route(s) on a host whose listener failed to converge`
+      : "";
+  return {
+    ok: res.exitCode === 0,
+    skipped: false,
+    output: res.output + note,
+  };
 }
 
 // The address a host's static nginx binds, and the peers allowed to reach it.
-// Co-located hosts are reached over loopback; everything else only accepts the
-// gateway's VPN address.
+// Remote hosts only accept the gateway's VPN address; a co-located host does
+// not get a listener at all (see LOCAL_SSH_TARGET).
 function staticBind(sshTarget: string): { bind: string; allow: string } {
-  const t = sshTarget.trim();
-  if (t === "localhost") return { bind: "127.0.0.1", allow: "127.0.0.1 ::1" };
-  return { bind: upstreamHost(t), allow: GATEWAY_WG_IP };
+  return { bind: upstreamHost(sshTarget.trim()), allow: GATEWAY_WG_IP };
 }
 
 /**
- * Reconcile the static-site nginx on every enabled host. Each host gets one
+ * Reconcile the static-site nginx on every enabled host. A remote host gets one
  * gateway-only HTTP listener on PORT_STATIC_SITES serving that host's sites
- * from the owner's `~/www/<label>` (and creating those directories + the
- * www-data ACLs). Hosts with no sites get the listener removed, so deleting the
- * last site on a host converges too. Per-host failures are reported, never
- * thrown.
+ * from the owner's `~/www/<label>`; the gateway host gets only the directories
+ * and www-data ACLs (its sites are served by the gateway vhost). Hosts with no
+ * sites get the listener removed, so deleting the last site on a host converges
+ * too. Per-host failures are reported, never thrown.
  */
 export async function reconcileUserStaticSites(): Promise<HostReconcileResult[]> {
   if (!BASE_DOMAIN) return [];
@@ -116,6 +163,7 @@ export async function reconcileUserStaticSites(): Promise<HostReconcileResult[]>
 
   const results: HostReconcileResult[] = [];
   for (const [sshTarget, sites] of sitesByHost) {
+    const local = isLocalSshTarget(sshTarget);
     const { bind, allow } = staticBind(sshTarget);
     const payload = sites.map((s) => ({
       label: s.label,
@@ -131,6 +179,9 @@ export async function reconcileUserStaticSites(): Promise<HostReconcileResult[]>
       env: {
         KUNGURU_BASE_DOMAIN: BASE_DOMAIN,
         KUNGURU_STATIC_PORT: String(PORT_STATIC_SITES),
+        // The gateway host serves its own sites from the gateway vhost, so it
+        // only needs the directories + ACLs.
+        KUNGURU_STATIC_LISTEN: local ? "0" : "1",
         KUNGURU_STATIC_BIND: bind,
         KUNGURU_STATIC_ALLOW: allow,
         KUNGURU_SITES: JSON.stringify(payload),
@@ -147,14 +198,14 @@ export async function reconcileUserStaticSites(): Promise<HostReconcileResult[]>
 }
 
 /**
- * Converge everything site-related: the gateway's routes and each host's static
- * listener. Used after any account or static-site change.
+ * Converge everything site-related: each host's static listener and docroots,
+ * then the gateway's routes. The gateway is rendered last and told which hosts
+ * failed, so it never forwards to a listener that is not there.
  */
 export async function reconcileSites(): Promise<ReconcileResult> {
-  // Hosts first: a static-site route should only appear on the gateway once the
-  // host listener that serves it exists.
   const hosts = await reconcileUserStaticSites();
-  const gateway = await reconcileUserSites();
+  const failed = new Set(hosts.filter((h) => !h.ok).map((h) => h.host));
+  const gateway = await reconcileUserSites({ skipStaticHosts: failed });
   const output = [
     ...hosts.map((h) => `[${h.host}] ${h.output}`),
     gateway.output,
@@ -163,7 +214,7 @@ export async function reconcileSites(): Promise<ReconcileResult> {
     .filter(Boolean)
     .join("\n");
   return {
-    ok: gateway.ok && hosts.every((h) => h.ok),
+    ok: gateway.ok && failed.size === 0,
     skipped: gateway.skipped && hosts.length === 0,
     output,
   };

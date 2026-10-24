@@ -1,4 +1,4 @@
-import { mkdirSync, chmodSync, existsSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, chmodSync, existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -266,6 +266,19 @@ function migrateAliases(db: Database.Database): void {
     root: string | null;
     access: string;
   }[];
+  // The migration is destructive (it drops the table), so record what happened
+  // both on stdout and in a file that survives the service log.
+  const warn = (line: string): void => {
+    console.warn(line);
+    try {
+      appendFileSync(
+        join(DATA_DIR, "migration-warnings.log"),
+        `${new Date().toISOString()} ${line}\n`,
+      );
+    } catch {
+      /* best effort */
+    }
+  };
   const insert = db.prepare(
     `INSERT OR IGNORE INTO static_sites
        (owner_kind, owner_id, label, source_root, served_root, require_auth)
@@ -283,17 +296,17 @@ function migrateAliases(db: Database.Database): void {
         `${home}/www/${a.label}`,
         a.access === "private" ? 1 : 0,
       );
-      console.warn(
+      warn(
         `migrated static alias '${a.label}' to a static site for '${owner.username}' ` +
           `(served root ${home}/www/${a.label}; previous docroot ${a.root ?? "unset"})`,
       );
     } else if (a.kind === "proxy") {
-      console.warn(
+      warn(
         `dropped proxy alias '${a.label}': aliases are retired; create an account ` +
           `or group named '${a.label}' to keep that hostname`,
       );
     } else {
-      console.warn(`dropped static alias '${a.label}': owner account is missing`);
+      warn(`dropped static alias '${a.label}': owner account is missing`);
     }
   }
   db.exec("DROP TABLE aliases");
@@ -904,22 +917,23 @@ export function deleteStaticSite(db: Database.Database, id: number): void {
 // deferred (see notes/groups-and-apps.md §14).
 export interface StaticSiteHostRow extends StaticSite {
   owner_name: string;
-  owner_enabled: number;
   ssh_target: string;
 }
 
 export function listStaticSiteHosts(
   db: Database.Database,
 ): StaticSiteHostRow[] {
+  // GROUP BY collapses an owner with accounts on several hosts into one row
+  // (multi-host accounts are deferred; any enabled host is a valid answer).
   return db
     .prepare(
-      `SELECT s.*, u.username AS owner_name, u.enabled AS owner_enabled,
-              h.ssh_target AS ssh_target
+      `SELECT s.*, u.username AS owner_name, h.ssh_target AS ssh_target
          FROM static_sites s
          JOIN users u ON u.id = s.owner_id
          JOIN accounts a ON a.user_id = u.id
          JOIN hosts h ON h.id = a.host_id
         WHERE u.enabled = 1 AND h.enabled = 1
+        GROUP BY s.id
         ORDER BY s.label ASC`,
     )
     .all() as StaticSiteHostRow[];

@@ -25,9 +25,12 @@ Rules:
 
 - **Empty `Remote-User` = anonymous.** Never treat a missing header as an
   identity.
-- The gateway **strips the session cookie** (`kunguru_sid`) before proxying
-  (request `Cookie` and response `Set-Cookie`). Apps must not expect it and must
-  not try to read it.
+- The gateway **strips the session cookie** (`kunguru_sid`) from the request
+  `Cookie` header before proxying. It does **not** filter response
+  `Set-Cookie` headers, so an app must never set a cookie with
+  `Domain=<base>` (that would be sent to every host, including the login app —
+  cookie tossing). Scope your own cookies to your own hostname. Apps must not
+  expect `kunguru_sid` and must not try to read it.
 - The gateway strips any inbound `Remote-User`/`Remote-Groups` from the client
   and re-sets them, so they cannot be spoofed through the proxy.
 - Apps must trust these headers **only** from the gateway's WireGuard IP (the
@@ -193,3 +196,10 @@ app.get("/private", (req, res) => {
   without the cookie strip is fail-open once the cookie is `<base>`-wide.
   `docs` migrates to a static site (the DB migration creates the row; the files
   move from the gateway docroot to `<owner>~/www/docs`).
+- **Retired `.users.` hosts** get a permanent redirect from the gateway:
+  `<x>-agent.users.<base>` → `<x>-agent.<base>` and `<x>.users.<base>` →
+  `<x>-dev.<base>`. This needs the `*.users.<base>` SAN, so that SAN is retained
+  for now; remove the redirect (and the SAN) once old bookmarks are gone.
+- **Static sites owned on the gateway host** are served from the gateway vhost's
+  docroot, not from a loopback listener: a loopback listener would let any local
+  process read a `require_auth` site by sending the `Host` header directly.

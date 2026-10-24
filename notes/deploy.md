@@ -103,11 +103,13 @@ sites never re-issues a certificate.
 ```
 *.kunguru.net          users. (app), llm. (Bifrost), <account>., <account>-dev.,
                        <account>-agent., <label>. (static sites)
-*.users.kunguru.net    legacy; now redundant (the `.users.` app subtree is retired)
+*.users.kunguru.net    only for the retired-host redirect (see below)
 ```
 
-The `*.users.<base>` SAN is kept until the next issuance so no vhost loses
-coverage mid-migration; nothing in the current model needs it.
+The `*.users.<base>` SAN is retained because the gateway serves a permanent
+redirect from the retired `.users.` hosts (`<x>-agent.users.<base>` →
+`<x>-agent.<base>`, `<x>.users.<base>` → `<x>-dev.<base>`). Nothing else needs
+it; drop the redirect and the SAN once old bookmarks are gone.
 
 Issued via Joker DNS-01 (needs the per-zone DynDNS credentials file):
 
@@ -171,6 +173,39 @@ pnpm sites-reconcile              # or: mise exec -- pnpm sites-reconcile
 
 Database lives in `<checkout>/data/` (gitignored) and is preserved across pulls.
 
+### Cutover to the two-port model + static sites (one-time)
+
+The alias migration is **destructive** (it drops the `aliases` table), and the
+session cookie is now `<base>`-wide, so do these in order:
+
+1. **Back up the DB** before the first start of the new build:
+   `cp -a data data.bak-$(date +%F)`.
+2. **Remove the hand-managed legacy vhosts** on the gateway (`ops`, `ops-dev`,
+   `gitbot`, `tongue-tie-dev`, the `tasks.*` `/api/` locations, the static
+   `docs` vhost). Any vhost that proxies without the cookie strip is fail-open
+   once the cookie is `<base>`-wide. Verify with:
+   `grep -L kunguru_cookie /etc/nginx/sites-enabled/*` — only `kunguru-users`
+   should be listed.
+3. **Recreate the retired proxy alias as an account**: `ops` becomes a group (or
+   user) named `ops`. The migration drops the alias and logs a warning; the
+   hostname works again once `ops` is an account.
+4. **Move the migrated static site's files**: the migration turns the static
+   alias `docs` into a static site for its DB owner, served from
+   `/home/<owner>/www/docs`; move the built output there and the source project
+   to `/home/<owner>/sites/docs`.
+5. Start the new build, then read `data/migration-warnings.log` (also printed to
+   the service log) to confirm what the alias migration did.
+6. `pnpm sites-reconcile`; every enabled host should report `[ok]` (this also
+   installs nginx + acl on user servers the first time).
+7. Verify (from the gateway):
+   - `<account>.<base>`, `<account>-dev.<base>`, `<account>-agent.<base>`;
+   - a public and a `require_auth` static site, signed out and in;
+   - `/internal/auth` for a **disabled** owner's site returns 403;
+   - the legacy redirect: `curl -sI https://<user>-agent.users.<base>/` → 301 to
+     `<user>-agent.<base>`;
+   - `ssh <sshUser>@localhost` works on the gateway (the static reconcile SSHes
+     to the gateway host on every site change).
+
 ## Upgrading tenant agents (Hermes / XMPP plugin / WebUI)
 
 `scripts/hermes/ensure.sh` converges each tenant's Hermes install, and
@@ -227,11 +262,23 @@ A static site is an owner-scoped resource (owner = user or group, 5 per owner):
   `scripts/nginx/ensure-user-static.sh` (which also creates the directories and
   grants `www-data` read access via ACLs — homes are 2770);
 - the gateway forwards `<label>.<base>` to `<owner-host>:14000` and applies the
-  site's `require_auth` gate. The gateway never serves a tenant docroot.
+  site's `require_auth` gate.
 
-`pnpm sites-reconcile` converges both layers (gateway routes + every host's
-static listener) from the DB; the app calls the same code after any account or
-site change.
+**Static sites owned on the gateway host itself** (the admin's accounts) are
+served from the gateway vhost's docroot instead of a loopback listener. A
+loopback listener would let any local process read a `require_auth` site by
+sending the `Host` header directly; the gateway host only gets the directories
+and ACLs (`KUNGURU_STATIC_LISTEN=0`).
+
+Side effects of the first reconcile on a user server: `nginx` and `acl` are
+installed if missing (nginx is enabled, so Debian's default `:80` vhost starts —
+`server_tokens off` is set in the rendered vhosts) and each site's directories
+and ACLs are created.
+
+`pnpm sites-reconcile` converges both layers (every host's static listener and
+directories, then the gateway routes) from the DB; the app calls the same code
+after any account or site change. The gateway is rendered last and is told which
+hosts failed, so it never forwards to a listener that is not there.
 
 `scripts/hermes/ensure.sh` installs this contract into every tenant as the
 `kunguru-sites` skill under `~/.hermes/skills/kunguru-custom/`, embedding the

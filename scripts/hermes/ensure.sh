@@ -623,6 +623,10 @@ run certbot, and do not create certificates yourself.
 - Serve app code from `~/sites` or `~/www`; those are static-site source and
   docroot paths.
 - Use `kunguru-nginx` or `sudo`.
+- Set a cookie with `Domain=<base>` (or any parent domain). The session cookie
+  is stripped on the way to your app, but a cookie you set for the parent domain
+  is sent to every host, including the login app — that is cookie tossing. Scope
+  your cookies to your own hostname.
 
 ## Verification and common statuses
 

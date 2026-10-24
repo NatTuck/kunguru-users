@@ -6,8 +6,7 @@
 # Bifrost vhosts, which reuse it) serve:
 #   *.kunguru.net          users., llm., <account>., <account>-dev.,
 #                          <account>-agent., <label>. (static sites)
-#   *.users.kunguru.net    legacy; redundant now that `.users.` is retired
-#                          (kept until the next issuance)
+#   *.users.kunguru.net    only for the retired-host redirect (drop with it)
 #
 # Because the SAN set is fixed, this is a one-time job: after the first issue,
 # certbot.timer renews it. Reconcile (scripts/nginx/ensure-user-sites.sh) never

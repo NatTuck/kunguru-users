@@ -3,9 +3,6 @@ import { get } from "./api";
 
 export interface AppConfig {
   baseDomain: string;
-  /** The login app's own host (`users.<base>`). */
-  privateDomain: string;
-  authHost?: string;
   xmppDomain: string;
 }
 
@@ -25,9 +22,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const data = await get<AppConfig>("/api/config");
       set({ config: data });
     } catch {
-      set({
-        config: { baseDomain: "", privateDomain: "", authHost: "", xmppDomain: "" },
-      });
+      set({ config: { baseDomain: "", xmppDomain: "" } });
     }
   },
 }));

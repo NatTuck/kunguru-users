@@ -9,7 +9,7 @@ The account/site vhost (`kunguru-user-sites`), the admin app vhost
 ```
 *.kunguru.net          users. (app), llm. (Bifrost), <account>.,
                        <account>-dev., <account>-agent., <label>. (static sites)
-*.users.kunguru.net    legacy; now redundant (the `.users.` subtree is retired)
+*.users.kunguru.net    only for the retired-host redirect (drop with it)
 ```
 
 The SAN set is **fixed**, so the certificate is issued once and renewed by

@@ -16,8 +16,7 @@ import { Mono, StatusChip } from "./ui";
 // Static sites for one owner. With `userId` it is the admin view of another
 // account's sites; without it, the signed-in user's own sites (self-service).
 // A site is `<label>.<base>`, served from the owner's `~/www/<label>`; the
-// source/build project is `~/sites/<label>` — the source path is shown so the
-// owner knows where to build.
+// source/build project is `~/sites/<label>`.
 export default function StaticSitesPanel({ userId }: { userId?: number }) {
   const config = useConfigStore((s) => s.config);
   const baseDomain = config?.baseDomain ?? "";
@@ -27,17 +26,25 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
       : `/api/users/${userId}/static-sites`;
 
   const [sites, setSites] = useState<StaticSite[] | null>(null);
+  const [limit, setLimit] = useState(5);
   const [label, setLabel] = useState("");
   const [access, setAccess] = useState("public");
   const [error, setError] = useState<string | null>(null);
+  // The site was saved but the nginx/gateway reconcile did not fully converge.
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState<number | null>(null);
 
   const load = async () => {
     try {
-      const d = await get<{ sites: StaticSite[] }>(base);
+      const d = await get<{ sites: StaticSite[]; limit?: number }>(base);
       setSites(d.sites);
-    } catch {
+      if (typeof d.limit === "number") setLimit(d.limit);
+    } catch (e) {
       setSites([]);
+      setError(
+        e instanceof Error ? e.message : "failed to load static sites",
+      );
     }
   };
 
@@ -46,47 +53,50 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base]);
 
-  const add = async () => {
+  type Reconcile = { ok: boolean; output: string };
+  type MutationReply = { sites?: Reconcile };
+
+  // Every mutation returns the reconcile result. A failed reconcile means the
+  // database is right but the route may not be live yet, so say so instead of
+  // pretending the site works.
+  const mutate = async (fn: () => Promise<MutationReply>) => {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      await post(base, { label, requireAuth: access === "private" });
+      const reply = await fn();
+      if (reply.sites && !reply.sites.ok) {
+        setNotice(
+          `Saved, but the route did not converge: ${
+            reply.sites.output.trim() || "no output"
+          }`,
+        );
+      }
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "request failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = () =>
+    mutate(async () => {
+      const reply = await post<MutationReply>(base, {
+        label,
+        requireAuth: access === "private",
+      });
       setLabel("");
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "failed to add static site");
-    } finally {
-      setBusy(false);
-    }
-  };
+      return reply;
+    });
 
-  const remove = async (id: number) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await del(`/api/static-sites/${id}`);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "failed to remove static site");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const remove = (id: number) =>
+    mutate(() => del<MutationReply>(`/api/static-sites/${id}`));
 
-  const setAuth = async (id: number, requireAuth: boolean) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await patch(`/api/static-sites/${id}`, { requireAuth });
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "failed to change access");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const setAuth = (id: number, requireAuth: boolean) =>
+    mutate(() => patch<MutationReply>(`/api/static-sites/${id}`, { requireAuth }));
 
-  const atLimit = sites != null && sites.length >= 5;
+  const atLimit = sites != null && sites.length >= limit;
 
   return (
     <div className="space-y-5">
@@ -94,6 +104,13 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
         <Alert status="danger">
           <Alert.Content>
             <Alert.Description>{error}</Alert.Description>
+          </Alert.Content>
+        </Alert>
+      )}
+      {notice && (
+        <Alert status="warning">
+          <Alert.Content>
+            <Alert.Description>{notice}</Alert.Description>
           </Alert.Content>
         </Alert>
       )}
@@ -145,19 +162,49 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
                     >
                       {s.require_auth ? "Make public" : "Require login"}
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      isDisabled={busy}
-                      onPress={() => void remove(s.id)}
-                    >
-                      Remove
-                    </Button>
+                    {confirming === s.id ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          isDisabled={busy}
+                          onPress={() => {
+                            setConfirming(null);
+                            void remove(s.id);
+                          }}
+                        >
+                          Confirm
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="tertiary"
+                          onPress={() => setConfirming(null)}
+                        >
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        isDisabled={busy}
+                        onPress={() => setConfirming(s.id)}
+                      >
+                        Remove
+                      </Button>
+                    )}
                   </div>
                 </li>
               );
             })}
           </ul>
+        )}
+        {sites != null && sites.length > 0 && (
+          <p className="text-xs text-neutral-500">
+            Removing a site drops its route; the files in{" "}
+            <span className="font-mono">~/sites</span> and{" "}
+            <span className="font-mono">~/www</span> are kept.
+          </p>
         )}
       </div>
 
@@ -206,7 +253,7 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
 
         {atLimit && (
           <p className="text-xs text-neutral-500">
-            This owner already has the maximum of 5 static sites.
+            This owner already has the maximum of {limit} static sites.
           </p>
         )}
 
