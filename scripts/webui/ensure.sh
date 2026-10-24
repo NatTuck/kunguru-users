@@ -17,6 +17,9 @@
 #                                `provider/name`); exported to the WebUI as
 #                                HERMES_WEBUI_DEFAULT_MODEL
 #   WEBUI_TRUSTED_PROXIES        WEBUI_LOGOUT_URL (both optional)
+#   WEBUI_GROUP_PROFILE_MAP      JSON map pinning a group account's sessions to
+#                                the root profile, e.g. {"ops":"default"}
+#                                (exported as HERMES_WEBUI_GROUP_PROFILE_MAP)
 set -euo pipefail
 
 : "${USERNAME:?missing required env: USERNAME}"
@@ -86,6 +89,18 @@ webui_host="${WEBUI_HOST:-127.0.0.1}"
 webui_proxies="${WEBUI_TRUSTED_PROXIES:-127.0.0.1/32}"
 logout_url="${WEBUI_LOGOUT_URL:-}"
 webui_default_model="${WEBUI_DEFAULT_MODEL:-}"
+group_profile_map="${WEBUI_GROUP_PROFILE_MAP:-}"
+
+# Optional unit line, emitted only when set (an empty value could be parsed as
+# invalid JSON by the WebUI).
+extra_env=""
+if [[ -n "$group_profile_map" ]]; then
+  # systemd processes quotes/escapes in unit values, so a JSON value must have
+  # its quotes and backslashes escaped to survive into the environment.
+  escaped_map="${group_profile_map//\\/\\\\}"
+  escaped_map="${escaped_map//\"/\\\"}"
+  extra_env="Environment=HERMES_WEBUI_GROUP_PROFILE_MAP=${escaped_map}"
+fi
 
 # --- lingering user manager (webui must survive logout/reboot) ---
 loginctl enable-linger "$USERNAME"
@@ -147,6 +162,7 @@ Environment=HERMES_WEBUI_TRUSTED_AUTH_HEADER=Remote-User
 Environment=HERMES_WEBUI_TRUSTED_PROXY_CIDRS=${webui_proxies}
 Environment=HERMES_WEBUI_TRUSTED_AUTH_LOGOUT_URL=${logout_url}
 Environment=HERMES_WEBUI_DEFAULT_MODEL=${webui_default_model}
+${extra_env}
 ExecStart=${venv_py} ${repo_dir}/server.py
 Restart=always
 RestartSec=5

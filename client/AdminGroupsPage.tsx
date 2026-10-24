@@ -99,6 +99,7 @@ export default function AdminGroupsPage() {
                     tone="accent"
                   />
                   {!g.enabled && <StatusChip label="disabled" tone="danger" />}
+                  {g.agent && <StatusChip label="agent" tone="success" />}
                   {!g.provisioned ? (
                     <StatusChip label="not provisioned" tone="warning" />
                   ) : g.status === "active" ? (

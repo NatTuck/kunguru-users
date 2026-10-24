@@ -5,6 +5,7 @@ import type {
   GroupDetail,
   GroupProvisionInfo,
   GroupSummary,
+  JobDetail,
 } from "./types";
 
 interface CreateReply {
@@ -26,6 +27,9 @@ interface GroupsState {
   adminGroups: GroupSummary[];
   adminLoading: boolean;
   adminError: string | null;
+  /** The group whose agent job is open in the modal. */
+  agentJobFor: number | null;
+  agentJob: JobDetail | null;
   load: () => Promise<void>;
   create: (name: string) => Promise<GroupProvisionInfo | null>;
   open: (id: number) => Promise<void>;
@@ -37,6 +41,9 @@ interface GroupsState {
   provision: (id: number) => Promise<GroupProvisionInfo | null>;
   loadAdmin: () => Promise<void>;
   transfer: (id: number, username: string) => Promise<CommandResult | null>;
+  startAgent: (id: number) => Promise<number | null>;
+  closeAgentJob: () => void;
+  message: (id: number, username: string, message: string) => Promise<CommandResult | null>;
   clearActionError: () => void;
 }
 
@@ -57,6 +64,8 @@ export const useGroupsStore = create<GroupsState>((set, getState) => ({
   adminGroups: [],
   adminLoading: false,
   adminError: null,
+  agentJobFor: null,
+  agentJob: null,
 
   load: async () => {
     set({ loading: true, listError: null });
@@ -255,5 +264,69 @@ export const useGroupsStore = create<GroupsState>((set, getState) => ({
     }
   },
 
+  // Start (or re-run) a group's agent; poll its job so the page can show the
+  // log and refresh the group when it finishes.
+  startAgent: async (id) => {
+    set({ busy: true, actionError: null, agentJobFor: id, agentJob: null });
+    try {
+      const data = await post<{ jobId: number }>(`/api/groups/${id}/hermes`);
+      set({ busy: false });
+      pollAgentJob(id, data.jobId);
+      return data.jobId;
+    } catch (err) {
+      set({ busy: false, agentJobFor: null, actionError: await message(err, "could not start the agent") });
+      return null;
+    }
+  },
+
+  closeAgentJob: () => {
+    // Keep polling in the background; only the modal closes.
+    set({ agentJobFor: null, agentJob: null });
+  },
+
+  message: async (id, username, text) => {
+    set({ busy: true, actionError: null });
+    try {
+      const data = await post<CommandResult>(`/api/groups/${id}/message`, {
+        username,
+        message: text,
+      });
+      set({ busy: false });
+      return data;
+    } catch (err) {
+      set({ busy: false, actionError: await message(err, "failed to send the message") });
+      return null;
+    }
+  },
+
   clearActionError: () => set({ actionError: null }),
 }));
+
+// Polling handle for the currently watched group agent job.
+let agentPoll: ReturnType<typeof setTimeout> | null = null;
+
+function pollAgentJob(groupId: number, jobId: number): void {
+  if (agentPoll) {
+    clearTimeout(agentPoll);
+    agentPoll = null;
+  }
+  const tick = async () => {
+    let detail: JobDetail;
+    try {
+      detail = await get<JobDetail>(`/api/jobs/${jobId}`);
+    } catch {
+      agentPoll = setTimeout(() => void tick(), 3000);
+      return;
+    }
+    useGroupsStore.setState({ agentJob: detail });
+    if (detail.job.status === "running") {
+      agentPoll = setTimeout(() => void tick(), 2000);
+      return;
+    }
+    agentPoll = null;
+    await useGroupsStore.getState().load();
+    const state = useGroupsStore.getState();
+    if (state.detail?.group.id === groupId) await state.open(groupId);
+  };
+  void tick();
+}

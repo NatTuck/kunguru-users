@@ -14,6 +14,7 @@ import {
   getHostByName,
   getJob,
   getJobSteps,
+  getUserById,
   listActiveAccountUsers,
   listGroupMembers,
   setAccountAgentInfo,
@@ -59,9 +60,14 @@ export const PASSWORD_SYNC_PROFILE = "password-sync";
 // Switch a tenant's default model and restart the agent gateway + WebUI.
 export const MODEL_SET_PROFILE = "model-set";
 // Create/converge a group account: the Linux user+group that backs a group and
-// its two app slots. Group Hermes (root profile, SOUL.md, WebUI map) is a later
-// step; membership converges separately after any membership change.
+// its two app slots. Group Hermes (root profile, SOUL.md, WebUI map) is a
+// separate, explicit run (`GROUP_HERMES_PROFILE`); membership converges
+// separately after any membership change.
 export const GROUP_ACCOUNT_PROFILE = "group-account";
+// Provision a group's agent: the agent XMPP account, Hermes (root profile in
+// the group home), the WebUI pinned to the root profile, and the SOUL.md
+// roster. Slow (first Hermes install), so it runs as a background job.
+export const GROUP_HERMES_PROFILE = "group-hermes";
 
 type StepTarget = "user-host" | "snikket-host";
 
@@ -101,6 +107,12 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
   [GROUP_ACCOUNT_PROFILE]: [
     { name: "linux-group", scriptRel: "account/ensure-group.sh", target: "user-host" },
     { name: "app-slots", scriptRel: "account/ensure-apps.sh", target: "user-host" },
+  ],
+  [GROUP_HERMES_PROFILE]: [
+    { name: "snikket-agent-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
+    { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
+    { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
+    { name: "soul", scriptRel: "hermes/ensure-soul.sh", target: "user-host" },
   ],
   [AGENT_UPDATE_PROFILE]: [
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
@@ -155,6 +167,13 @@ interface RunJobOpts {
   update?: boolean;
   // Optional extra env exported to every step (e.g. HERMES_ACTION=stop).
   action?: string;
+  // Group agents: the JIDs the agent answers, the JID for proactive messages
+  // (normally the group owner), the member usernames for SOUL.md, and the
+  // WebUI profile map pinning sessions to the root profile.
+  xmppAllowed?: string[];
+  xmppHome?: string;
+  groupMembers?: string[];
+  webuiGroupMap?: string;
 }
 
 /** Runs an ordered set of steps inline, persisting an audit job + step logs. */
@@ -219,8 +238,13 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         if (opts.agent) {
           env.XMPP_JID = `${opts.agent.username}@${XMPP_DOMAIN}`;
           env.XMPP_PASSWORD = opts.agent.password;
-          env.XMPP_ALLOWED_USERS = `${user.username}@${XMPP_DOMAIN}`;
-          env.XMPP_HOME_CHANNEL = `${user.username}@${XMPP_DOMAIN}`;
+          env.XMPP_ALLOWED_USERS = (
+            opts.xmppAllowed && opts.xmppAllowed.length > 0
+              ? opts.xmppAllowed
+              : [`${user.username}@${XMPP_DOMAIN}`]
+          ).join(" ");
+          env.XMPP_HOME_CHANNEL =
+            opts.xmppHome ?? `${user.username}@${XMPP_DOMAIN}`;
           env.XMPP_HOST = XMPP_DOMAIN;
         }
         // Tenant site-deployment facts for the kunguru-sites skill: the two app
@@ -238,6 +262,10 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
       if (s.def.name === "hermes-model") {
         env.HERMES_MODEL = opts.model ?? HERMES_MODEL;
       }
+      if (s.def.name === "soul") {
+        env.KUNGURU_GROUP_MEMBERS = (opts.groupMembers ?? []).join(" ");
+        env.KUNGURU_XMPP_DOMAIN = XMPP_DOMAIN;
+      }
       if (s.def.name === "webui") {
         // Per-account WebUI on `<account>-agent.<base>`: bound to the address
         // the gateway's nginx reaches (loopback when co-located), trusting only
@@ -252,6 +280,8 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         // instance-wide default.
         env.WEBUI_DEFAULT_MODEL = opts.model ?? HERMES_MODEL;
         if (PRIVATE_DOMAIN) env.WEBUI_LOGOUT_URL = `https://${PRIVATE_DOMAIN}/`;
+        // A group WebUI pins every member's session to the root profile.
+        if (opts.webuiGroupMap) env.WEBUI_GROUP_PROFILE_MAP = opts.webuiGroupMap;
       }
       const res = await runRemote({
         sshUser: SSH_USER,
@@ -537,6 +567,161 @@ export async function ensureGroupMembership(
       KUNGURU_GROUP_MEMBERS: members.join(" "),
     },
     timeoutMs: 120_000,
+  });
+
+  // If the group agent is provisioned, membership changes also converge its
+  // roster (SOUL.md) and XMPP allowlist, and restart the gateway.
+  let soul: { ok: boolean; output: string } | null = null;
+  if (account.bifrost_vk_id) {
+    try {
+      const soulScript = await readFile(
+        join(SCRIPTS_DIR, "hermes/ensure-soul.sh"),
+        "utf8",
+      );
+      const soulRes = await runRemote({
+        sshUser: SSH_USER,
+        sshTarget: account.host.ssh_target,
+        script: soulScript,
+        env: {
+          USERNAME: group.username,
+          KUNGURU_GROUP_MEMBERS: members.join(" "),
+          KUNGURU_XMPP_DOMAIN: XMPP_DOMAIN,
+        },
+        timeoutMs: 120_000,
+      });
+      soul = { ok: soulRes.exitCode === 0, output: soulRes.output };
+    } catch (err) {
+      soul = {
+        ok: false,
+        output: err instanceof Error ? err.message : "SOUL converge failed",
+      };
+    }
+  }
+
+  return {
+    ok: res.exitCode === 0 && (soul?.ok ?? true),
+    output: res.output + (soul ? `\n[soul]\n${soul.output}` : ""),
+  };
+}
+
+/**
+ * Starts (or re-runs) a group's agent: agent XMPP account, Hermes root profile,
+ * WebUI pinned to the root profile, and the SOUL.md roster. Heavy (a first
+ * Hermes install), so it runs as a background job the caller polls.
+ */
+export function startGroupAgent(opts: {
+  group: Pick<User, "id" | "username">;
+  createdBy: number | null;
+}): { jobId: number } {
+  const db = getDb();
+  const account = getAccountForUser(db, opts.group.id);
+  if (!account) {
+    throw new Error("group has no provisioned account; provision it first");
+  }
+  if (account.status !== "active") {
+    throw new Error("group account is not active; provision it first");
+  }
+  const host = getHostById(db, account.host_id);
+  if (!host) throw new Error("host not found");
+  if (inFlight.has(opts.group.id)) {
+    throw new Error("a provisioning run is already in progress for this group");
+  }
+  const jobId = createJob(db, {
+    hostId: host.id,
+    profile: GROUP_HERMES_PROFILE,
+    createdBy: opts.createdBy,
+  }).id;
+  inFlight.add(opts.group.id);
+  void runGroupAgent(db, opts.group, account, host, opts.createdBy, jobId)
+    .catch((err) => console.error(`group-hermes job ${jobId} failed:`, err))
+    .finally(() => inFlight.delete(opts.group.id));
+  return { jobId };
+}
+
+async function runGroupAgent(
+  db: ReturnType<typeof getDb>,
+  group: Pick<User, "id" | "username">,
+  account: Account,
+  host: Host,
+  createdBy: number | null,
+  jobId: number,
+): Promise<void> {
+  const members = listGroupMembers(db, group.id);
+  const groupRow = getUserById(db, group.id);
+  const owner =
+    groupRow?.owner_user_id != null
+      ? getUserById(db, groupRow.owner_user_id)
+      : undefined;
+  const ownerJid = owner ? `${owner.username}@${XMPP_DOMAIN}` : undefined;
+
+  let vk: { id: string; value: string } | null = null;
+  try {
+    vk = await issueVirtualKey(group.username);
+    const steps: StepRuntime[] = PROFILES[GROUP_HERMES_PROFILE].map((def) => ({
+      def,
+      host: def.target === "user-host" ? host : snikketHost(db),
+    }));
+    const result = await runJob({
+      user: group,
+      createdBy,
+      profile: GROUP_HERMES_PROFILE,
+      jobHostId: host.id,
+      jobId,
+      steps,
+      model: account.hermes_model ?? undefined,
+      llm: { apiKey: vk.value },
+      agent: {
+        username: agentUsername(group.username),
+        password: generatePassword(),
+      },
+      xmppAllowed: members.map((m) => `${m.username}@${XMPP_DOMAIN}`),
+      xmppHome: ownerJid,
+      groupMembers: members.map((m) => m.username),
+      webuiGroupMap: JSON.stringify({ [group.username]: "default" }),
+    });
+    if (result.status === "succeeded") {
+      setAccountVkId(db, account.id, vk.id);
+      if (account.bifrost_vk_id) {
+        await setVirtualKeyActive(account.bifrost_vk_id, false).catch(
+          () => undefined,
+        );
+      }
+      reconcileFromJobOutput(db, account.id, result.jobId);
+    } else {
+      await deleteVirtualKey(vk.id).catch(() => undefined);
+    }
+  } catch (err) {
+    if (vk) await deleteVirtualKey(vk.id).catch(() => undefined);
+    const job = getJob(db, jobId);
+    if (job?.status === "running") finishJob(db, jobId, "failed");
+    console.error(`group-hermes job ${jobId} failed:`, err);
+  }
+}
+
+/**
+ * Sends a literal XMPP message from a group's agent account to one member.
+ * Used by the app's message-as-agent action (a member picker), since a group
+ * agent has no single home channel.
+ */
+export async function sendGroupAgentMessage(opts: {
+  group: Pick<User, "id" | "username">;
+  target: string;
+  message: string;
+}): Promise<{ ok: boolean; output: string }> {
+  const db = getDb();
+  const account = getAccountForUser(db, opts.group.id);
+  if (!account) throw new Error("group has no provisioned account");
+  const script = await readFile(join(SCRIPTS_DIR, "hermes/message.sh"), "utf8");
+  const res = await runRemote({
+    sshUser: SSH_USER,
+    sshTarget: account.host.ssh_target,
+    script,
+    env: {
+      USERNAME: opts.group.username,
+      XMPP_MESSAGE: opts.message,
+      XMPP_TARGET: `${opts.target}@${XMPP_DOMAIN}`,
+    },
+    timeoutMs: 240_000,
   });
   return { ok: res.exitCode === 0, output: res.output };
 }

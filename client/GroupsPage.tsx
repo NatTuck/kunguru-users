@@ -1,11 +1,21 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { Alert, Button, Card, Input, Label, Spinner } from "@heroui/react";
+import {
+  Alert,
+  Button,
+  Card,
+  Input,
+  Label,
+  ListBox,
+  Select,
+  Spinner,
+  TextArea,
+} from "@heroui/react";
 import { appDevUrl, appUrl, useConfigStore } from "./configStore";
 import { useGroupsStore } from "./groupsStore";
 import AppSlotsPanel from "./AppSlotsPanel";
 import StaticSitesPanel from "./StaticSitesPanel";
-import type { GroupSummary } from "./types";
+import type { CommandResult, GroupSummary } from "./types";
 import { ModalShell, StatusChip } from "./ui";
 
 // Groups are shared accounts: an owner manages the group, members use it (its
@@ -34,6 +44,11 @@ export default function GroupsPage() {
     disable,
     enable,
     provision,
+    startAgent,
+    closeAgentJob,
+    agentJobFor,
+    agentJob,
+    message,
     clearActionError,
   } = useGroupsStore();
 
@@ -42,6 +57,10 @@ export default function GroupsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [appsFor, setAppsFor] = useState<GroupSummary | null>(null);
   const [sitesFor, setSitesFor] = useState<GroupSummary | null>(null);
+  const [messageFor, setMessageFor] = useState<GroupSummary | null>(null);
+  const [messageTo, setMessageTo] = useState<string | null>(null);
+  const [messageText, setMessageText] = useState("");
+  const [messageResult, setMessageResult] = useState<CommandResult | null>(null);
 
   useEffect(() => {
     void load();
@@ -84,6 +103,23 @@ export default function GroupsPage() {
     if (r) {
       setMemberName("");
       if (!r.ok) setNotice(`Membership did not converge: ${r.output.trim() || "unknown error"}`);
+    }
+  };
+
+  const openMessage = (g: GroupSummary) => {
+    setMessageFor(g);
+    setMessageTo(null);
+    setMessageText("");
+    setMessageResult(null);
+    if (detail?.group.id !== g.id) void open(g.id);
+  };
+
+  const sendMessage = async () => {
+    if (!messageFor || !messageTo || !messageText.trim()) return;
+    const r = await message(messageFor.id, messageTo, messageText);
+    if (r) {
+      setMessageResult(r);
+      if (r.ok) setMessageText("");
     }
   };
 
@@ -179,6 +215,7 @@ export default function GroupsPage() {
                       tone={g.role === "owner" ? "accent" : "neutral"}
                     />
                     {!g.enabled && <StatusChip label="disabled" tone="danger" />}
+                    {g.agent && <StatusChip label="agent" tone="success" />}
                     {!g.provisioned ? (
                       <StatusChip label="not provisioned" tone="warning" />
                     ) : g.status === "active" ? (
@@ -244,6 +281,26 @@ export default function GroupsPage() {
                   >
                     Static sites
                   </Button>
+                  {isOwner && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      isDisabled={busy || !g.provisioned}
+                      onPress={() => void startAgent(g.id)}
+                    >
+                      {g.agent ? "Update agent" : "Enable agent"}
+                    </Button>
+                  )}
+                  {isOwner && g.agent && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      isDisabled={busy}
+                      onPress={() => openMessage(g)}
+                    >
+                      Message
+                    </Button>
+                  )}
                   {isOwner && (
                     <Button
                       size="sm"
@@ -356,6 +413,149 @@ export default function GroupsPage() {
           }
         >
           <AppSlotsPanel accountId={appsFor.id} />
+        </ModalShell>
+      )}
+
+      {agentJobFor != null && (
+        <ModalShell
+          open
+          onClose={closeAgentJob}
+          title={`Agent — ${groups.find((g) => g.id === agentJobFor)?.username ?? ""}`}
+          width="sm:max-w-[720px]"
+          footer={
+            <div className="flex justify-end">
+              <Button variant="tertiary" onPress={closeAgentJob}>
+                Close
+              </Button>
+            </div>
+          }
+        >
+          {agentJob ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-sm">
+                <span className="font-medium">Job {agentJob.job.id}</span>
+                <StatusChip
+                  label={agentJob.job.status}
+                  tone={
+                    agentJob.job.status === "succeeded"
+                      ? "success"
+                      : agentJob.job.status === "failed"
+                        ? "danger"
+                        : "warning"
+                  }
+                />
+              </div>
+              {agentJob.steps.map((s) => (
+                <div
+                  key={s.id}
+                  className="rounded-xl border border-neutral-200 bg-neutral-50 p-3"
+                >
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium">
+                      {s.script} → {s.target_ssh}
+                    </span>
+                    <StatusChip
+                      label={s.status}
+                      tone={
+                        s.status === "succeeded"
+                          ? "success"
+                          : s.status === "running"
+                            ? "warning"
+                            : "danger"
+                      }
+                    />
+                    {s.exit_code != null && (
+                      <span className="text-neutral-400">exit {s.exit_code}</span>
+                    )}
+                  </div>
+                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-white p-3 font-mono text-xs">
+                    {s.output_log ||
+                      (s.status === "running"
+                        ? "(running — output appears when the step finishes)"
+                        : "(no output)")}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Spinner size="sm" />
+          )}
+        </ModalShell>
+      )}
+
+      {messageFor && (
+        <ModalShell
+          open
+          onClose={() => setMessageFor(null)}
+          title={`Message as ${messageFor.username}-agent`}
+          width="sm:max-w-[560px]"
+          footer={
+            <div className="flex justify-end gap-2">
+              <Button variant="tertiary" onPress={() => setMessageFor(null)}>
+                Close
+              </Button>
+              <Button
+                variant="primary"
+                isDisabled={busy || !messageTo || !messageText.trim()}
+                onPress={() => void sendMessage()}
+              >
+                Send
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            {detailLoading && detail?.group.id !== messageFor.id ? (
+              <Spinner size="sm" />
+            ) : (
+              <>
+                <Select
+                  value={messageTo}
+                  onChange={(v) => setMessageTo(v == null ? null : String(v))}
+                  placeholder="Choose a member"
+                >
+                  <Label>To</Label>
+                  <Select.Trigger>
+                    <Select.Value />
+                    <Select.Indicator />
+                  </Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {(detail?.group.id === messageFor.id
+                        ? detail.members
+                        : []
+                      ).map((m) => (
+                        <ListBox.Item
+                          key={m.user_id}
+                          id={m.username}
+                          textValue={m.username}
+                        >
+                          {m.username}
+                        </ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+                <TextArea
+                  value={messageText}
+                  onChange={(e) => setMessageText(e.target.value)}
+                  rows={4}
+                  placeholder="Message from the group's agent"
+                />
+                {messageResult && (
+                  <Alert status={messageResult.ok ? "success" : "danger"}>
+                    <Alert.Content>
+                      <Alert.Description>
+                        {messageResult.ok
+                          ? "Sent."
+                          : messageResult.output.trim() || "Send failed."}
+                      </Alert.Description>
+                    </Alert.Content>
+                  </Alert>
+                )}
+              </>
+            )}
+          </div>
         </ModalShell>
       )}
 

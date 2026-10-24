@@ -59,6 +59,8 @@ export interface GroupSummary {
   provisioned: boolean;
   host: string | null;
   status: "pending" | "active" | "failed" | null;
+  /** The group's Hermes agent has been provisioned (a Bifrost key exists). */
+  agent: boolean;
 }
 
 export interface GroupDetail {

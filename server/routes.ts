@@ -59,6 +59,8 @@ import {
   startFleetAgentUpdate,
   startStandardAccountProvision,
   provisionGroup,
+  sendGroupAgentMessage,
+  startGroupAgent,
   syncSnikketPassword,
   applyUserModel,
   type GroupProvisionResult,
@@ -994,16 +996,23 @@ api.get("/users/:id/jobs", requireAuth, requireAdmin, (req, res) => {
   res.json({ jobs: listJobsForUser(getDb(), id) });
 });
 
-api.get("/jobs/:id", requireAuth, requireAdmin, (req, res) => {
+// Admins see every job; anyone else may read a job they started (e.g. a group
+// owner polling their group's agent provisioning).
+api.get("/jobs/:id", requireAuth, (req, res) => {
   const id = parseId(req.params.id);
   if (id == null) {
     res.status(400).json({ error: "invalid id" });
     return;
   }
+  const user = currentUser(res);
   const db = getDb();
   const job = getJob(db, id);
   if (!job) {
     res.status(404).json({ error: "job not found" });
+    return;
+  }
+  if (user?.role !== "admin" && job.created_by !== user?.id) {
+    res.status(403).json({ error: "forbidden" });
     return;
   }
   res.json({ job, steps: getJobSteps(db, id) });
@@ -1408,6 +1417,7 @@ interface GroupView {
   provisioned: boolean;
   host: string | null;
   status: "pending" | "active" | "failed" | null;
+  agent: boolean;
 }
 
 function groupView(db: ReturnType<typeof getDb>, row: GroupRow): GroupView {
@@ -1423,6 +1433,7 @@ function groupView(db: ReturnType<typeof getDb>, row: GroupRow): GroupView {
     provisioned: !!account,
     host: account?.host.name ?? null,
     status: account?.status ?? null,
+    agent: !!account?.bifrost_vk_id,
   };
 }
 
@@ -1445,6 +1456,7 @@ function groupViewFrom(
     provisioned: !!account,
     host: account?.host.name ?? null,
     status: account?.status ?? null,
+    agent: !!account?.bifrost_vk_id,
   };
 }
 
@@ -1738,6 +1750,80 @@ api.post("/groups/:id/provision", requireAuth, async (req, res) => {
   } catch (err) {
     res.status(502).json({
       error: err instanceof Error ? err.message : "provisioning failed",
+    });
+  }
+});
+
+// Provision (or re-run) the group's agent. Heavy, so it is a background job;
+// the caller polls GET /api/jobs/:id.
+api.post("/groups/:id/hermes", requireAuth, (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = groupAccess(res, id, { manage: true });
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  try {
+    const { jobId } = startGroupAgent({
+      group: found.access.group,
+      createdBy: currentUser(res)?.id ?? null,
+    });
+    res.status(202).json({ jobId });
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : "could not start the agent",
+    });
+  }
+});
+
+// Message as the group's agent to a chosen member (a group has no single home
+// channel, so the sender picks).
+api.post("/groups/:id/message", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = groupAccess(res, id, { manage: true });
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const { username, message } = (req.body ?? {}) as {
+    username?: unknown;
+    message?: unknown;
+  };
+  if (typeof message !== "string" || !message.trim()) {
+    res.status(400).json({ error: "message is required" });
+    return;
+  }
+  if (message.length > 2000) {
+    res.status(400).json({ error: "message must be at most 2000 characters" });
+    return;
+  }
+  const db = getDb();
+  const member =
+    typeof username === "string"
+      ? listGroupMembers(db, id).find((m) => m.username === username.trim())
+      : undefined;
+  if (!member) {
+    res.status(400).json({ error: "choose a member of this group" });
+    return;
+  }
+  try {
+    const result = await sendGroupAgentMessage({
+      group: found.access.group,
+      target: member.username,
+      message,
+    });
+    res.json({ ok: result.ok, output: result.output });
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "failed to send the message",
     });
   }
 });
