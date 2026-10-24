@@ -168,6 +168,12 @@ app.get("/private", (req, res) => {
 - **The user-server static nginx** must only accept the gateway's WG IP
   (`allow <gateway-wg-ip>; deny all;`); `require_auth` static sites are gated at
   the gateway before the request is forwarded.
+- **The trusted-proxy rule is topology-dependent.** It assumes the app is not
+  co-located with untrusted tenants. On a one-host deployment every account
+  shares the network namespace, so loopback is not a trust boundary: a
+  co-located app must not rely on the peer-IP check alone, and identity must
+  come from a signed token (roadmap) or the instance must be cooperative-only.
+  See `notes/topology.md` §3.
 
 ---
 

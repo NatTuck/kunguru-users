@@ -194,6 +194,29 @@ print one:
 docker exec snikket create-invite --admin --group default
 ```
 
+## Single-host variant (one server)
+
+For a small instance, all roles run on one machine (see `notes/topology.md` §2.2
+for the model and the trust caveat). Differences from the group runbook:
+
+- `group.conf` has **one** host, with `HOST_ROLES` role `hub`; set
+  `SNIKKET_HOST` and `BIFROST_HOST` to that host. There are no peers, so
+  `HOST_PEER_IP` is unused.
+- The current bootstrap still runs the WireGuard steps (and requires the `WG_*`
+  variables); with no peers it just creates an unused `wg0`. Until a
+  single-host mode lands (topology P1), either accept that or run the steps
+  individually: `--only ssh-access`, `--only snikket`, `--only bifrost`,
+  `--only nginx`.
+- The instance JSON has one host with `sshTarget: "localhost"`, and
+  `gatewayHost`/`snikketHost` both name it. `gatewayWgIp` is planned to become
+  optional when every host is local; until then set it to `127.0.0.1`
+  (nothing consumes it when every account is co-located).
+- Host operations currently still use `ssh kunguru@localhost`, so authorize the
+  app user's key on itself (see `deploy.md` §0). A local transport is planned
+  (topology P1).
+- `users.<base>`, the wildcard certificate, and Snikket/Bifrost on loopback are
+  identical to the group setup.
+
 ## Rollback / recovery notes
 
 - Before the nginx step, `ensure-nginx` saved the original WireGuard config at

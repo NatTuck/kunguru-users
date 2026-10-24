@@ -15,7 +15,8 @@ Host individualized AI agents for people. Each user gets:
 - Interaction surfaces: Hermes WebUI, Hermes XMPP plugin, ntfy via ntfy.sh.
 
 We build an admin app that provisions, tears down, exports, and imports the above,
-across one or more servers with roles, over a WireGuard VPN.
+across one or more servers with roles (a WireGuard VPN connects them when there is
+more than one).
 
 ## Scale and trust model
 
@@ -28,6 +29,11 @@ across one or more servers with roles, over a WireGuard VPN.
 - Consequently: shared-host isolation via real Linux accounts, no per-agent sandbox
   theater. Don't put anything you don't want agents curling on the public internet.
 - Multi-tenant isolation between agents is via OS-native account permissions.
+- That is the **filesystem** boundary. Network isolation is a separate axis:
+  identity is asserted by the gateway and trusted by IP, which assumes the app is
+  not co-located with untrusted tenants. On a one-host deployment every account
+  shares the network namespace, so the filesystem boundary does not imply
+  network isolation. See `notes/topology.md`.
 
 ## Reference deployment (current test setup)
 
@@ -37,11 +43,13 @@ across one or more servers with roles, over a WireGuard VPN.
   gateway and keeps the VPN up so the gateway/admin can reach it.
 - Admin reaches `nat@` on either host over ssh.
 
-### Future configs (not milestone 1)
+### Supported configs
 
-- One public server (VPS / dedicated).
+- **One public server** (VPS / dedicated): all roles on one host. A supported
+  target, not yet first-class — see `notes/topology.md` for what already works
+  and the remaining gaps.
 - Public gateway + one or more private servers (residential/business links, VPNed to
-  the gateway).
+  the gateway) — the reference config.
 - LLMs locally, from cloud providers, or a mix — through the Bifrost gateway
   (https://docs.getbifrost.ai/) which does model renaming, per-user usage/quota,
   and is the intended LLM chokepoint for hosted agents. The gateway itself is

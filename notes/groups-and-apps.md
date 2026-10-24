@@ -302,6 +302,9 @@ Deferred: one user server today; local homes, local Linux groups. Keep `host_id`
 on accounts, keep membership changes in one converge step, don't bake
 single-host assumptions into `siteRoutes`/auth.
 
+Topology (one host vs gateway + user servers, and the constraints current work
+must respect) is documented in `notes/topology.md`.
+
 ---
 
 ## 15. kunguru.net inventory & migration

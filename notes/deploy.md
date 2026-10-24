@@ -30,6 +30,9 @@ ssh -o BatchMode=yes kunguru@localhost 'sudo -n true'
 ssh -o BatchMode=yes kunguru@10.0.1.2    'sudo -n true'   # accept host key once
 ```
 
+A **one-host** instance still needs the `localhost` half of this today; the
+planned local transport (`notes/topology.md` P1) removes it.
+
 ## 1. Toolchain (mise, mirroring dev)
 
 ```sh
@@ -53,10 +56,26 @@ pnpm typecheck
 
 ## 3. Instance config
 
-```sh
-cp deploy/kunguru-users.env.example ~/.config/kunguru-users.env
-$EDITOR ~/.config/kunguru-users.env   # PORT/HOST + KUNGURU_SSH_* overrides
-```
+Two files. Neither is instance identity in the repo: the env file lives outside
+the checkout, and the JSON is the tracked, secret-free instance config.
+
+- `~/.config/kunguru-users.env` selects the instance and carries runtime/secrets:
+  `KUNGURU_INSTANCE=<name>` (loads `deploy/instances/<name>.json`), an optional
+  `KUNGURU_CONFIG=<path>`, and `NODE_ENV=production`. `PORT`/`HOST` are **not**
+  read — the listen address is `runtime` in the instance JSON.
+- `deploy/instances/<name>.json` holds the deployment identity: domain, XMPP
+  domain, `gatewayHost`/`snikketHost`, the host list, and the LLM endpoint.
+
+There are no built-in defaults: a missing file or required field refuses to
+start (see `server/config.ts`).
+
+### One-host instances
+
+Use a single host row with `sshTarget: "localhost"` and point `gatewayHost` and
+`snikketHost` at it — see `notes/topology.md` §2.2 for the sketch, what already
+works, and the trust caveat (co-located accounts share the network namespace, so
+identity is only IP-trusted). Until topology P1, `gatewayWgIp` is still
+required and host operations still ssh to `localhost`.
 
 ## 4. Run as a user service (with linger)
 
