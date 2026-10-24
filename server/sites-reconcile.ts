@@ -1,7 +1,8 @@
-import { reconcileUserSites } from "./nginx";
+import { reconcileSites } from "./nginx";
 
-// Reconcile the gateway's per-user reverse-proxy routes from current DB state.
-// Run on the app host: `pnpm sites-reconcile`.
-const result = await reconcileUserSites();
+// Reconcile site routing from current DB state: the gateway's account/static
+// routes and each host's static-site nginx. Run on the app host:
+// `pnpm sites-reconcile`.
+const result = await reconcileSites();
 console.log(result.output);
 process.exit(result.ok ? 0 : 1);

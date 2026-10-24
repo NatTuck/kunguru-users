@@ -1,8 +1,8 @@
 # App authentication protocol (kunguru gateway)
 
-Status: **agreed, not implemented** (Phase 1 of
-`notes/groups-and-apps.md`). Audience: tenant app authors; the same contract
-should be embedded in the `kunguru-sites` skill.
+Status: **implemented** (Phase 1 + Phase 2a of `notes/groups-and-apps.md`) on
+`feature/groups`, not yet deployed. Audience: tenant app authors; the same
+contract is embedded in the `kunguru-sites` skill.
 
 The gateway is the only authentication authority. Apps never implement password
 login and never see the session cookie. They receive **verified identity
@@ -175,14 +175,21 @@ app.get("/private", (req, res) => {
   adds optional/required behavior to `/internal/auth`. `sanitizeNext` is
   broadened to accept single-label hosts under `<base>` (and keeps
   `.users.<base>` during the migration).
-- **Two-port model**: the old slots become app `<account>.<base>` (`12000+id`),
-  app-dev `<account>-dev.<base>` (`13000+id`), and WebUI
-  `<account>-agent.<base>` (`11000+id`). Existing private apps at `13000+id` move
-  to `<user>-dev.<base>`; public apps stay `<user>.<base>`; WebUIs move to
-  `<user>-agent.<base>`. The `.users.` subtree is retired.
-- **Static sites** are served by nginx on the owner's host; the gateway forwards
-  `<label>.<base>` to `<owner-host>:<static-port>` and applies the
-  `require_auth` gate. Source lives at `~/sites/<label>`; the served docroot is
-  `~/www/<label>`.
-- Until the migration completes, existing `private` hosts remain `require_auth`
-  and `public` hosts become optional-auth with identity when present.
+- **Two-port model (implemented)**: the old slots are now app
+  `<account>.<base>` (`12000+id`), app-dev `<account>-dev.<base>` (`13000+id`),
+  and WebUI `<account>-agent.<base>` (`11000+id`). The `.users.` app subtree is
+  retired: `/internal/auth` resolves those three hosts plus static sites, and
+  the gateway vhost is one wildcard block (`*.<base>`) driven by a
+  host->upstream map.
+- **Static sites (implemented)**: served by nginx on the owner's host; the
+  gateway forwards `<label>.<base>` to `<owner-host>:14000` and applies the
+  site's `require_auth` gate. Source lives at `~/sites/<label>`; the served
+  docroot is `~/www/<label>`. `scripts/nginx/ensure-user-static.sh` renders the
+  host listener and fixes directory permissions/ACLs.
+- **Deployment cutover (not done)**: this branch is not deployed. On a live
+  instance the hand-managed legacy vhosts (`ops`, `ops-dev`, `gitbot`,
+  `tongue-tie-dev`, the `tasks.*` `/api/` locations, the static `docs` vhost)
+  must be removed when the new routes land, since a legacy vhost that proxies
+  without the cookie strip is fail-open once the cookie is `<base>`-wide.
+  `docs` migrates to a static site (the DB migration creates the row; the files
+  move from the gateway docroot to `<owner>~/www/docs`).

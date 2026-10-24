@@ -1,20 +1,21 @@
-# ACME / TLS for per-user sites
+# ACME / TLS for account and static-site hosts
 
-The per-user sites vhost (`kunguru-user-sites`), the admin app vhost
+The account/site vhost (`kunguru-user-sites`), the admin app vhost
 (`kunguru-users`), and the Bifrost vhost (`bifrost-llm`) all reuse one cert,
 `/etc/letsencrypt/live/<sitesCert>/`, issued and renewed here.
 
 ## What it covers
 
 ```
-*.kunguru.net          users. (app), llm. (Bifrost), <user>., public aliases
-*.users.kunguru.net    <user>.users., <user>-agent.users., private aliases
+*.kunguru.net          users. (app), llm. (Bifrost), <account>.,
+                       <account>-dev., <account>-agent., <label>. (static sites)
+*.users.kunguru.net    legacy; now redundant (the `.users.` subtree is retired)
 ```
 
 The SAN set is **fixed**, so the certificate is issued once and renewed by
-`certbot.timer`. `scripts/nginx/ensure-user-sites.sh` (run on every user/alias
-change) never touches certificates — it only renders vhosts. Adding users or
-aliases no longer re-issues anything.
+`certbot.timer`. `scripts/nginx/ensure-user-sites.sh` (run on every account or
+static-site change) never touches certificates — it only renders vhosts.
+Adding accounts or sites no longer re-issues anything.
 
 The apex (`kunguru.net` / `www.kunguru.net`) keeps its own cert and vhost; it is
 deliberately not folded in.

@@ -95,15 +95,19 @@ IP before the certificate can be issued.
 
 ### 5a. TLS — the shared wildcard certificate
 
-The app vhost, the Bifrost vhost, and the rendered per-user sites vhost all reuse
+The app vhost, the Bifrost vhost, and the rendered account/site vhost all reuse
 one cert (`sitesCert`): a fixed wildcard pair issued **once** and renewed by
-`certbot.timer`. Because the SAN set never changes, adding users or aliases never
-re-issues a certificate.
+`certbot.timer`. Because the SAN set never changes, adding accounts or static
+sites never re-issues a certificate.
 
 ```
-*.kunguru.net          users. (app), llm. (Bifrost), <user>., public aliases
-*.users.kunguru.net    <user>.users., <user>-agent.users., private aliases
+*.kunguru.net          users. (app), llm. (Bifrost), <account>., <account>-dev.,
+                       <account>-agent., <label>. (static sites)
+*.users.kunguru.net    legacy; now redundant (the `.users.` app subtree is retired)
 ```
+
+The `*.users.<base>` SAN is kept until the next issuance so no vhost loses
+coverage mid-migration; nothing in the current model needs it.
 
 Issued via Joker DNS-01 (needs the per-zone DynDNS credentials file):
 
@@ -156,9 +160,10 @@ systemctl --user restart kunguru-users
 On hosts without mise (`drongo`), use the app's bundled Node toolchain instead:
 `PATH="$HOME/.hermes/node/bin:$PATH" pnpm …`.
 
-After a change that affects per-user site routing or the WebUI hostname
-(`server/sites.ts`), reconcile nginx (this no longer touches certificates — the
-shared wildcard cert is fixed and renewed by `certbot.timer`):
+After a change that affects account/site routing (`server/sites.ts`), reconcile
+both nginx layers — the gateway routes and every host's static-site listener.
+This no longer touches certificates (the shared wildcard cert is fixed and
+renewed by `certbot.timer`):
 
 ```sh
 pnpm sites-reconcile              # or: mise exec -- pnpm sites-reconcile
@@ -194,20 +199,39 @@ Notes:
 
 Tenants must not touch nginx, certbot, or DNS. The gateway nginx is rendered
 centrally by `scripts/nginx/ensure-user-sites.sh` from the DB + a fixed port
-formula (`server/sites.ts`), so a tenant exposes a site simply by running a
-web server on the assigned **slot port** on their host:
+formula (`server/sites.ts`), so a tenant exposes an app simply by running a web
+server on the assigned **slot port** on their host. Every account (a user, or a
+group) has the same two app slots plus a managed WebUI:
 
 | Slot | Hostname | Port | Access |
 |---|---|---|---|
-| public-site | `<user>.<base>` | `12000 + id` | public |
-| private-app | `<user>.users.<base>` | `13000 + id` | app session |
-| hermes-webui | `<user>-agent.users.<base>` | `11000 + id` | app session |
+| app | `<account>.<base>` | `12000 + id` | optional auth (or `require_auth`) |
+| app-dev | `<account>-dev.<base>` | `13000 + id` | optional auth (or `require_auth_dev`) |
+| hermes-webui | `<account>-agent.<base>` | `11000 + id` | login required (managed) |
 
-Private slots validate the `users.<base>` session cookie at the gateway and
-inject the owner as the trusted `Remote-User` header; the tenant app binds the
-address the gateway reaches and trusts that header only from the gateway's WG
-IP. Extra hostnames are admin-managed aliases (`aliases` table) pointing at one
-of the tenant's three slot services (or a gateway docroot for `static`).
+The gateway authenticates every routed host through `/internal/auth`, strips the
+session cookie, and injects the verified identity as `Remote-User` /
+`Remote-Groups`; a `require_auth` host gets a 401 there and is redirected to the
+login page. Tenant apps bind the address the gateway reaches and trust those
+headers only from the gateway's WG IP. Extra hostnames need an account name
+(a group) — aliases are retired.
+
+### Static sites
+
+A static site is an owner-scoped resource (owner = user or group, 5 per owner):
+
+- label `<label>.<base>`, in the same namespace as account names;
+- source/build project `~/sites/<label>`, served docroot `~/www/<label>`;
+- served by **nginx on the owner's host** on one gateway-only HTTP listener
+  (`PORT_STATIC_SITES`, 14000), rendered by
+  `scripts/nginx/ensure-user-static.sh` (which also creates the directories and
+  grants `www-data` read access via ACLs — homes are 2770);
+- the gateway forwards `<label>.<base>` to `<owner-host>:14000` and applies the
+  site's `require_auth` gate. The gateway never serves a tenant docroot.
+
+`pnpm sites-reconcile` converges both layers (gateway routes + every host's
+static listener) from the DB; the app calls the same code after any account or
+site change.
 
 `scripts/hermes/ensure.sh` installs this contract into every tenant as the
 `kunguru-sites` skill under `~/.hermes/skills/kunguru-custom/`, embedding the

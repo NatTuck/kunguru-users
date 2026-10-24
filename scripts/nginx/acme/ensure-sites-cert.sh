@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Issue/renew the shared per-user sites certificate as a wildcard pair, using
+# Issue/renew the shared account/site certificate as a wildcard pair, using
 # Joker DNS-01 via certbot's manual plugin. Run as root on the gateway.
 #
-# The certificate covers every hostname the per-user sites vhost (and the app
-# and Bifrost vhosts, which reuse it) serve:
-#   *.kunguru.net          users., llm., <user>., public aliases
-#   *.users.kunguru.net    <user>.users., <user>-agent.users., private aliases
+# The certificate covers every hostname the account/site vhost (and the app and
+# Bifrost vhosts, which reuse it) serve:
+#   *.kunguru.net          users., llm., <account>., <account>-dev.,
+#                          <account>-agent., <label>. (static sites)
+#   *.users.kunguru.net    legacy; redundant now that `.users.` is retired
+#                          (kept until the next issuance)
 #
 # Because the SAN set is fixed, this is a one-time job: after the first issue,
 # certbot.timer renews it. Reconcile (scripts/nginx/ensure-user-sites.sh) never
-# touches certificates, so adding users/aliases no longer re-issues anything.
+# touches certificates, so adding accounts/sites no longer re-issues anything.
 #
 # Env:
 #   KUNGURU_BASE_DOMAIN       e.g. kunguru.net                        (required)

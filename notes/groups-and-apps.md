@@ -1,7 +1,8 @@
 # Groups, apps, and static sites — design & implementation plan
 
-Status: **design agreed, not implemented.** Phase 1 (auth foundation) is on
-`feature/groups`; it needs revision to the two-port/static-site model below.
+Status: **Phase 1 and Phase 2a implemented** on `feature/groups` (not deployed).
+Phase 2b (app units/run scripts, provisioning of `~/.local/apps/app*`, migration
+of the existing sites/apps) and Phase 3 (groups) are not started.
 
 Related: `notes/auth-protocol.md`, `notes/deploy.md`,
 `scripts/hermes/ensure.sh`, `scripts/webui/ensure.sh`.
@@ -338,18 +339,20 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
 
 ## 16. Phases
 
-**Phase 1 — Auth foundation** (on `feature/groups`, needs revision)
+**Phase 1 — Auth foundation** (done, on `feature/groups`)
 - cookie `Domain=<base>`; strip the session cookie upstream; inject
   `Remote-User`/`Remote-Groups`; optional vs `require_auth`; login redirect;
   `sanitizeNext` for `<label>.<base>`; additive schema.
 
 **Phase 2 — Two-port apps + static sites** (foundation for groups)
-- schema: `require_auth`/`require_auth_dev`, `static_sites`, drop aliases;
-- app units `app`/`app-dev` + convention `run` scripts;
-- user-server nginx (install, base config, per-site blocks, ACLs) +
-  `scripts/nginx/ensure-user-static.sh`;
-- gateway route map for static sites; `/internal/auth` for static sites;
-- UI: app/app-dev, static sites page; migration of existing sites/apps.
+- done (2a): schema (`require_auth`/`require_auth_dev`, `static_sites`, aliases
+  dropped); `server/sites.ts` host model; `/internal/auth` for account slots and
+  static sites; gateway route map; user-server static nginx
+  (`scripts/nginx/ensure-user-static.sh`, dirs + ACLs);
+  `/api/static-sites` + admin routes; UI (app/app-dev cards, static-sites panel
+  and admin modal).
+- todo (2b): app units `app`/`app-dev` + convention `run` scripts, provisioning
+  of `~/.local/apps/app*`; migration of the existing sites/apps (see §15).
 
 **Phase 3 — Groups**
 - schema already; provisioning (Linux user/group, home, optional Hermes root
@@ -364,8 +367,9 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
 ## 17. Code touchpoints
 
 - `server/db.ts` — users (`kind`, `owner_user_id`, `require_auth`,
-  `require_auth_dev`), `group_members`, `static_sites`, `getPrincipalByName` /
-  `getUserByName`, `listUsers` filter, `listSiteUsers` (apps + static sites).
+  `require_auth_dev`), `group_members`, `static_sites`, `getUserByUsername`
+  (any kind), `listUsersWithAccounts` filter, `listSiteUsers` (accounts),
+  `listStaticSiteHosts` (sites + owner host).
 - `server/auth.ts` — login `kind='user'`; session guard; `sanitizeNext`.
 - `server/index.ts` — `/internal/auth` optional/required + membership + static
   sites.
@@ -374,10 +378,12 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
 - `server/provision.ts` — account branch, app units, static-site dirs/ACLs.
 - `server/sites.ts` — app/app-dev/webui routes; static-site routes to the
   owner-host static port; drop alias routes.
-- `server/nginx.ts` — gateway renderer (apps + static-site upstreams).
-- `scripts/nginx/ensure-user-sites.sh` — gateway routes (no static `root` for
-  tenant sites; gateway-local `kunguru` sites may still use `root`).
-- new `scripts/nginx/ensure-user-static.sh` — user-server nginx.
+- `server/nginx.ts` — `reconcileUserSites` (gateway), `reconcileUserStaticSites`
+  (each host), `reconcileSites` (both).
+- `scripts/nginx/ensure-user-sites.sh` — gateway routes (one wildcard vhost +
+  host->upstream map; no tenant docroots).
+- `scripts/nginx/ensure-user-static.sh` — user-server static listener, site
+  directories and `www-data` ACLs.
 - `scripts/hermes/ensure.sh` — skill text, `SOUL.md`, allowed users, group
   branch.
 - `scripts/webui/ensure.sh` — group WebUI env.

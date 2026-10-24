@@ -58,7 +58,7 @@ import {
   upstreamHost,
 } from "./sites";
 import { tcpUp } from "./probe";
-import { reconcileUserSites } from "./nginx";
+import { reconcileSites } from "./nginx";
 import { refreshModelsAndRestartWebuis } from "./models";
 import { BASE_DOMAIN, PRIVATE_DOMAIN } from "./inventory";
 import {
@@ -75,7 +75,7 @@ export const api = Router();
 // surfaced, never fatal to the operation itself.
 async function reconcileSitesSafe(): Promise<{ ok: boolean; output: string }> {
   try {
-    const r = await reconcileUserSites();
+    const r = await reconcileSites();
     return { ok: r.ok, output: r.output };
   } catch (err) {
     return { ok: false, output: err instanceof Error ? err.message : String(err) };
