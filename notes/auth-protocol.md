@@ -165,6 +165,11 @@ app.get("/private", (req, res) => {
   only one that keeps it). The broad `Domain=<base>` cookie is fail-open: any
   hand-managed/legacy vhost that forgets the strip will hand the session cookie
   to its upstream. Audit all vhosts before broadening the cookie on a host.
+- **`/internal/auth` is nginx-only.** With `runtime.authSocket` set it listens
+  on a root-created unix socket in a directory owned by the app user and group
+  `www-data`; local users can neither reach nor bind it. Without it, it is a
+  loopback TCP endpoint (fine only where the gateway host has no untrusted
+  local users).
 - **The user-server static nginx** must only accept the gateway's WG IP
   (`allow <gateway-wg-ip>; deny all;`); `require_auth` static sites are gated at
   the gateway before the request is forwarded.

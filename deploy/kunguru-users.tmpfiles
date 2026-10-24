@@ -1,0 +1,11 @@
+# /etc/tmpfiles.d/kunguru-users.conf
+#
+# Root-created directory for the app's internal auth socket (the nginx
+# `auth_request` target). The app user owns it; nginx (www-data) can traverse
+# and connect; other local users cannot. Set "runtime.authSocket" in the
+# instance config to /run/kunguru-users/auth.sock to use it.
+#
+# Install:
+#   cp deploy/kunguru-users.tmpfiles /etc/tmpfiles.d/kunguru-users.conf
+#   systemd-tmpfiles --create /etc/tmpfiles.d/kunguru-users.conf
+d /run/kunguru-users 2770 kunguru www-data -

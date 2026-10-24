@@ -9,7 +9,8 @@
 #   KUNGURU_LOCAL_SITES  JSON array of {hostname, label, owner, root}: static
 #                        sites owned on THIS host, served from a docroot
 #   KUNGURU_SITES_CERT   cert name (default kunguru-sites)
-#   KUNGURU_AUTH_TARGET  host:port of the app's /internal/auth (127.0.0.1:3030)
+#   KUNGURU_AUTH_TARGET  the app's /internal/auth: `host:port` (loopback) or
+#                        `unix:/path/to/auth.sock`
 #   KUNGURU_AUTH_HOST    login app host (default users.<base>)
 #
 # Hosts (see server/sites.ts):
@@ -75,6 +76,12 @@ python3 - "$routes_json" "$local_json" "$base" "$cert_name" "$auth_target" "$aut
 import json, os, re, sys
 
 routes_json, local_json, base, cert_name, auth_target, auth_host, tmp = sys.argv[1:8]
+
+# nginx wants `http://host:port/uri` or `http://unix:/path:/uri`.
+if auth_target.startswith("unix:"):
+    auth_pass = "http://unix:{}:/internal/auth".format(auth_target[5:])
+else:
+    auth_pass = "http://{}/internal/auth".format(auth_target)
 webroot = "/var/www/certbot"
 cert_dir = "/etc/letsencrypt/live/" + cert_name
 LABEL = r"[a-z][a-z0-9-]*"
@@ -198,12 +205,12 @@ legacy_server = """server {{
 
 auth_location = """    location = /__auth {{
         internal;
-        proxy_pass http://{auth_target}/internal/auth;
+        proxy_pass {auth_pass};
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header X-Original-Host $host;
     }}
-""".format(auth_target=auth_target)
+""".format(auth_pass=auth_pass)
 
 login_location = """    error_page 401 = @login;
     location @login {{

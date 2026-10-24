@@ -22,6 +22,9 @@ PUBLIC_IP="167.114.113.100"
 PUBLIC_FQDN="otter.ferrus.net"
 
 # --- WireGuard hub (adopted + verified, never rebuilt) ---
+# A single-host inventory (exactly one host, role `hub`) skips the WireGuard
+# steps automatically. Set SKIP_WIREGUARD=1 to skip them on a multi-host setup
+# too; the WG_* variables are then unused (see group.conf.single.example).
 WG_IFACE="wg0"
 WG_HUB_IP="10.0.0.1"
 WG_SUBNET="10.0.0.0/24"

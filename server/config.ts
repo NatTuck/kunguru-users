@@ -41,7 +41,12 @@ export interface InstanceConfig {
     model: string;
   };
   hosts: InstanceHost[];
-  runtime: { port: number; host: string };
+  runtime: {
+    port: number;
+    host: string;
+    /** Unix socket for the nginx auth subrequest ("" = loopback TCP). */
+    authSocket: string;
+  };
   // Absolute path the config was loaded from (useful in diagnostics).
   source: string;
 }
@@ -82,7 +87,10 @@ function validate(raw: unknown, source: string): InstanceConfig {
   const domain = str(r, "domain", problems);
   const acmeEmail = str(r, "acmeEmail", problems);
   const sitesCert = str(r, "sitesCert", problems);
-  const gatewayWgIp = str(r, "gatewayWgIp", problems);
+  // A single-host deployment has no VPN, so this is validated after the hosts
+  // are known: it is required only when some host is not the app's own machine.
+  const gatewayWgIp =
+    typeof r.gatewayWgIp === "string" ? r.gatewayWgIp.trim() : "";
   const snikketHost = str(r, "snikketHost", problems);
   const gatewayHost = str(r, "gatewayHost", problems);
   const xmppDomain = str(r, "xmppDomain", problems);
@@ -140,6 +148,24 @@ function validate(raw: unknown, source: string): InstanceConfig {
     });
   }
 
+  // Cross-field checks once the hosts are known.
+  const isLocal = (h: InstanceHost): boolean =>
+    h.sshTarget.trim().toLowerCase() === "localhost";
+  const remoteHosts = hosts.filter((h) => !isLocal(h));
+  if (remoteHosts.length > 0 && !gatewayWgIp) {
+    problems.push(
+      `"gatewayWgIp" is required because ${remoteHosts
+        .map((h) => h.name)
+        .join(", ")} ${remoteHosts.length === 1 ? "is" : "are"} not local`,
+    );
+  }
+  if (hosts.length > 0 && gatewayHost && !hosts.some((h) => h.name === gatewayHost)) {
+    problems.push(`"gatewayHost" must name a host in "hosts" (got "${gatewayHost}")`);
+  }
+  if (hosts.length > 0 && snikketHost && !hosts.some((h) => h.name === snikketHost)) {
+    problems.push(`"snikketHost" must name a host in "hosts" (got "${snikketHost}")`);
+  }
+
   const runtimeRaw = (r.runtime ?? {}) as Record<string, unknown>;
   const port =
     runtimeRaw.port === undefined ? 3030 : typeof runtimeRaw.port === "number" ? runtimeRaw.port : NaN;
@@ -147,6 +173,17 @@ function validate(raw: unknown, source: string): InstanceConfig {
     typeof runtimeRaw.host === "string" && runtimeRaw.host.trim() ? runtimeRaw.host.trim() : "127.0.0.1";
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     problems.push(`"runtime.port" must be a valid port number`);
+  }
+  // Optional: serve /internal/auth on a unix socket (nginx only). An absolute
+  // path short enough for sockaddr_un.
+  const authSocket =
+    typeof runtimeRaw.authSocket === "string" ? runtimeRaw.authSocket.trim() : "";
+  if (authSocket) {
+    if (!authSocket.startsWith("/")) {
+      problems.push(`"runtime.authSocket" must be an absolute path`);
+    } else if (Buffer.byteLength(authSocket) > 100) {
+      problems.push(`"runtime.authSocket" is too long for a unix socket path`);
+    }
   }
 
   if (problems.length > 0) {
@@ -167,7 +204,7 @@ function validate(raw: unknown, source: string): InstanceConfig {
     xmppDomain,
     llm,
     hosts,
-    runtime: { port, host },
+    runtime: { port, host, authSocket },
     source,
   };
 }

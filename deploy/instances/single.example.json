@@ -1,0 +1,21 @@
+{
+  "domain": "example.net",
+  "cookieDomain": "users.example.net",
+  "acmeEmail": "admin@example.net",
+  "sitesCert": "kunguru-sites",
+  "gatewayWgIp": "",
+  "snikketHost": "solo",
+  "gatewayHost": "solo",
+  "sshUser": "kunguru",
+  "xmppDomain": "chat.example.net",
+  "llm": {
+    "apiUrl": "http://127.0.0.1:8181",
+    "baseUrl": "https://llm.example.net/v1",
+    "providers": ["local"],
+    "model": "default-model"
+  },
+  "hosts": [
+    { "name": "solo", "role": "admin", "sshTarget": "localhost" }
+  ],
+  "runtime": { "port": 3030, "host": "127.0.0.1" }
+}

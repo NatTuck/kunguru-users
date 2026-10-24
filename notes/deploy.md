@@ -16,22 +16,20 @@ Conventions:
 
 ## 0. Prerequisites on the target (as the app user, `kunguru`)
 
-Cross-server ssh for provisioning jobs. `kunguru@otter` must reach itself
-(`localhost`) and the other group hosts over the VPN (`10.0.1.2` = goose).
+Cross-server ssh for provisioning jobs, for hosts that are not the app's own
+machine. A host with `sshTarget: "localhost"` runs its steps **locally** as the
+app user (`sudo -n env -i … bash -s`), so it needs no key or ssh-to-self.
 
 ```sh
 ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519    # if no key yet
-# authorize on self:
-cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys
-# authorize on goose (from the controller that already has kunguru@goose access):
-#   cat <otter key>.pub | ssh kunguru@goose 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'
-# verify:
-ssh -o BatchMode=yes kunguru@localhost 'sudo -n true'
-ssh -o BatchMode=yes kunguru@10.0.1.2    'sudo -n true'   # accept host key once
+# authorize on a remote user server (from a controller that already has access):
+#   cat <gateway key>.pub | ssh kunguru@10.0.1.2 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'
+# verify (remote hosts only):
+ssh -o BatchMode=yes kunguru@10.0.1.2 'sudo -n true'   # accept host key once
 ```
 
-A **one-host** instance still needs the `localhost` half of this today; the
-planned local transport (`notes/topology.md` P1) removes it.
+A one-host instance therefore needs no ssh setup at all — only passwordless
+`sudo` for the app user, which the bootstrap's ssh-access step grants.
 
 ## 1. Toolchain (mise, mirroring dev)
 
@@ -72,10 +70,19 @@ start (see `server/config.ts`).
 ### One-host instances
 
 Use a single host row with `sshTarget: "localhost"` and point `gatewayHost` and
-`snikketHost` at it — see `notes/topology.md` §2.2 for the sketch, what already
-works, and the trust caveat (co-located accounts share the network namespace, so
-identity is only IP-trusted). Until topology P1, `gatewayWgIp` is still
-required and host operations still ssh to `localhost`.
+`snikketHost` at it (`deploy/instances/single.example.json`) — see
+`notes/topology.md` §2.2. `gatewayWgIp` may be empty, host operations run
+locally, and bootstrap skips WireGuard. The trust caveat still applies:
+co-located accounts share the network namespace, so identity is only IP-trusted
+— enable the internal auth socket (§4a) on a one-host instance.
+
+If you converted from a gateway + user-server config, disable the host rows that
+are no longer in the instance config (dry run first):
+
+```sh
+pnpm hosts-prune            # list
+pnpm hosts-prune --apply    # disable
+```
 
 ## 4. Run as a user service (with linger)
 
@@ -92,6 +99,40 @@ journalctl --user -u kunguru-users      # first-boot admin password is here
 First boot seeds the `kunguru` admin and prints a **one-time password** to the
 journal. Record it, then log in at the public URL. If it is ever lost:
 `pnpm reset-admin-pw` (regenerates and prints a new one).
+
+### 4a. Internal auth socket (recommended)
+
+`/internal/auth` is the endpoint nginx calls for every routed host. By default
+it listens on the app's loopback TCP port, which any local user can also reach
+(and, if the app is down, could bind). On a shared host put it on a unix socket
+that only nginx and the app user can use:
+
+```sh
+sudo cp deploy/kunguru-users.tmpfiles /etc/tmpfiles.d/kunguru-users.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/kunguru-users.conf   # /run/kunguru-users
+```
+
+Then add the socket to the instance JSON and restart:
+
+```json
+"runtime": { "port": 3030, "host": "127.0.0.1", "authSocket": "/run/kunguru-users/auth.sock" }
+```
+
+```sh
+systemctl --user restart kunguru-users
+pnpm sites-reconcile      # points the gateway's auth subrequest at the socket
+```
+
+Verify: the socket answers and the TCP endpoint does not:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' --unix-socket /run/kunguru-users/auth.sock \
+  -H 'X-Original-Host: users.<base>' http://localhost/internal/auth   # 403/200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3030/internal/auth  # 404
+```
+
+The app refuses to start if the path exists and is not a socket; it removes a
+stale socket left by a previous run.
 
 ## 5. nginx reverse proxy (`https://users.<base>/`)
 

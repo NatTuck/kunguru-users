@@ -1,9 +1,9 @@
 # Deployment topologies
 
-Status: **gateway + user servers is the reference config; one host is a
-supported config that is not yet first-class.** This doc records the topology
-model, the single-host requirements, and the constraints current work must
-respect so it does not close the door on one-host deployments.
+Status: **gateway + user servers is the reference config; one host is supported
+and functional (P1 done), and the auth socket is in place (P2).** Remaining:
+signed identity (P3), per-account isolation (P4). This doc records the topology model, the
+single-host requirements, and the constraints current work must respect.
 
 Related: `DESIGN.md` (problem statement), `expanded-design.md` (trust model),
 `auth-protocol.md`, `deploy.md`, `initial-setup.md`,
@@ -72,12 +72,22 @@ What runs where:
 - `users.<base>`, TLS, certificates, and the retired `.users.` redirect are
   unchanged.
 
+One host is now functional end to end:
+
+- host operations on a `localhost` host run **locally** (`sudo -n env -i … bash
+  -s`) — no ssh-to-self, no key setup;
+- `gatewayWgIp` may be empty (it is required only when a host is not local);
+  `gatewayHost`/`snikketHost` must name a host in `hosts`;
+- bootstrap skips WireGuard when the inventory has one host (or
+  `SKIP_WIREGUARD=1`);
+- `pnpm hosts-prune --apply` disables host rows that are no longer in the
+  config (for a two-host → one-host conversion);
+- templates: `deploy/instances/single.example.json`,
+  `scripts/bootstrap/group.conf.single.example`.
+
 Already true in the code: host resolution, loopback upstreams, co-located bind
 addresses and trusted proxy, local static serving, and the reconcile split
 between gateway routes and host docroots.
-
-Not yet first-class (see §5): optional `gatewayWgIp`, a local transport,
-bootstrap without WireGuard, host pruning, and templates/runbook.
 
 ## 3. Trust boundary (decision needed)
 
@@ -104,7 +114,7 @@ Options:
 | | What | Cost |
 |---|---|---|
 | T1 | Cooperative-only one host: document that accounts on a one-host instance must trust each other | none; contradicts the stated isolation boundary unless made explicit |
-| T2 | Auth socket + signed identity: `/internal/auth` on a unix socket in a root-created directory (kills the auth-authority squat; useful in both configs) and an Ed25519 per-request token with `aud` = host so apps verify instead of trusting an IP (kills impersonation for apps that verify; the WebUI needs upstream support) | contained + medium |
+| T2 | Auth socket + signed identity: the socket half is **done** (P2); an Ed25519 per-request token with `aud` = host (P3) would kill impersonation for apps that verify (the WebUI needs upstream support) | contained + medium |
 | T3 | Per-account network namespaces/containers: true parity | large, out of scope |
 
 Recommendation: **T1 + the auth socket now** (documented, and the socket is a
@@ -134,22 +144,23 @@ Any change on `feature/groups` (Phase 2b/3) must keep these true:
 8. Anything new that runs per account must be memory-bounded: one host runs the
    auth app + gateway + Snikket + Bifrost + every agent.
 
-## 5. Gaps to close (P1, functional)
+## 5. P1 status
 
-| Gap | Fix |
-|---|---|
-| `gatewayWgIp` is required even when unused | require it only when a non-local host exists; drop the unused `KUNGURU_GATEWAY_WG_IP` plumbing in `hermes/ensure.sh` |
-| every host operation is `ssh <user>@localhost` | local exec (`sudo -n env -i … bash -s`) when `sshTarget` is `localhost`, with the same stdin/timeout contract |
-| bootstrap always does WireGuard | a single-host mode that skips it (one `group.conf` host with role `hub`) |
-| `ensureHostSeed` never disables hosts removed from config | prune/disable config-absent hosts (explicit flag or CLI) |
-| no one-host template or runbook | `deploy/instances/single.example.json`, a single-host `group.conf` example, and an `initial-setup.md` variant |
-| capacity/availability | document; app-slot units exist now but have no resource limits (follow-up) |
+Done: optional `gatewayWgIp` (required only when a host is not local),
+`gatewayHost`/`snikketHost` validated against `hosts`, local transport for
+`sshTarget: localhost`, bootstrap skipping WireGuard on a single host (or
+`SKIP_WIREGUARD=1`), `pnpm hosts-prune`, and the single-host templates.
+
+Done in P2: `/internal/auth` on a root-created unix socket
+(`runtime.authSocket`, tmpfiles.d; nginx only), so a local tenant can neither
+reach nor squat the auth authority. Still open: per-account resource limits
+(app-slot units exist, no limits yet) and signed identity (P3).
 
 ## 6. Phases
 
-- **P1 — functional one host**: config, transport, bootstrap, host pruning,
-  templates, docs.
-- **P2 — auth socket** (both configs).
+- **P1 — functional one host** (done): config, transport, bootstrap, host
+  pruning, templates, docs.
+- **P2 — auth socket** (done, both configs).
 - **P3 — signed identity** with the groups work.
 - **P4 — per-account isolation** (deferred).
 
@@ -176,11 +187,14 @@ Fresh single-host VM/container, with no SSH keys and no WireGuard:
   site on the host converges; a failed host reconcile drops its routes;
 - `gatewayWgIp` omitted from the instance JSON.
 
-## 9. Open decisions
+## 9. Decisions
 
-1. Trust posture: T1 + auth socket (recommended) vs T2 now vs T3.
-2. Local transport vs ssh-to-self (recommended: local).
-3. Keep the WireGuard-capable path so a user server can be added later
-   (recommended: yes, with no WireGuard required today).
-4. Host role name for the one host: keep `admin` (recommended) or add
-   `standalone`.
+1. **Trust posture — open.** The auth socket (P2) is done; the remaining choice
+   is signed identity (P3) vs documented cooperative-only (T1) vs per-account
+   isolation (T3).
+2. **Local transport — resolved:** a `localhost` host runs locally, no
+   ssh-to-self.
+3. **WireGuard-capable path — resolved:** kept; not required when every host is
+   local, so a user server can be added later without changing the app.
+4. **Host role — resolved:** the one host keeps role `admin` (role is
+   informational).

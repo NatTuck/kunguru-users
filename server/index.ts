@@ -1,4 +1,6 @@
-import express from "express";
+import { createServer } from "node:http";
+import { chmodSync, existsSync, lstatSync, unlinkSync } from "node:fs";
+import express, { type Request, type Response } from "express";
 import cookieParser from "cookie-parser";
 import ViteExpress from "vite-express";
 import {
@@ -29,19 +31,6 @@ app.get("/api/ping", (_req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
 
-// nginx `auth_request` target for every routed app host. Runs on loopback (the
-// gateway's nginx) only. It resolves the requested host to an account slot
-// (`<account>.<base>`, `<account>-dev.<base>`, `<account>-agent.<base>`) or a
-// static site (`<label>.<base>`), then:
-//
-//   - optional host: 200, with identity headers when a session is present;
-//   - require_auth host: 200 + identity, or 401 when anonymous/unauthorized;
-//   - a valid session that is not allowed: 401 (not 403) so nginx's
-//     `error_page 401 = @login` sends the visitor to the login form.
-//
-// Identity is asserted via X-Auth-User / X-Auth-Groups, which nginx forwards as
-// the trusted Remote-User / Remote-Groups headers. This endpoint never
-// redirects itself.
 function isLoopback(addr: string | undefined): boolean {
   if (!addr) return false;
   const a = addr.startsWith("::ffff:") ? addr.slice(7) : addr;
@@ -103,8 +92,27 @@ function targetAllows(
     : target.account.id === userId;
 }
 
-app.get("/internal/auth", (req, res) => {
-  if (!isLoopback(req.socket.remoteAddress)) {
+// nginx `auth_request` target for every routed host. It resolves the requested
+// host to an account slot (`<account>.<base>`, `<account>-dev.<base>`,
+// `<account>-agent.<base>`) or a static site (`<label>.<base>`), then:
+//
+//   - optional host: 200, with identity headers when a session is present;
+//   - require_auth host: 200 + identity, or 401 when anonymous/unauthorized;
+//   - a valid session that is not allowed: 401 (not 403) so nginx's
+//     `error_page 401 = @login` sends the visitor to the login form.
+//
+// Identity is asserted via X-Auth-User / X-Auth-Groups, which nginx forwards as
+// the trusted Remote-User / Remote-Groups headers. This endpoint never
+// redirects itself.
+//
+// It is reachable only from nginx: on the loopback TCP address when no socket
+// is configured, otherwise on a unix socket in a root-created directory
+// (`runtime.authSocket`) whose permissions exclude tenants.
+function handleInternalAuth(req: Request, res: Response): void {
+  const peer = req.socket.remoteAddress;
+  // A unix socket has no peer address; its directory/socket permissions are
+  // the access control. A TCP peer must be loopback.
+  if (peer !== undefined && !isLoopback(peer)) {
     res.status(403).end();
     return;
   }
@@ -149,7 +157,18 @@ app.get("/internal/auth", (req, res) => {
   res.setHeader("X-Auth-User", ctx.user.username);
   res.setHeader("X-Auth-Groups", listGroupNamesForUser(db, ctx.user.id).join(","));
   res.status(200).end();
-});
+}
+
+const authSocket = config.runtime.authSocket;
+if (authSocket) {
+  // The socket is the only way in; the TCP listener must not answer the
+  // subrequest (a stale nginx target would otherwise get the SPA's 200).
+  app.get("/internal/auth", (_req, res) => {
+    res.status(404).end();
+  });
+} else {
+  app.get("/internal/auth", handleInternalAuth);
+}
 
 app.use("/api", api);
 
@@ -173,3 +192,32 @@ const server = app.listen(PORT, HOST, () => {
   ViteExpress.bind(app, server);
   console.log(`kunguru-users listening on http://${HOST}:${PORT}`);
 });
+
+if (authSocket) {
+  // The directory is created by tmpfiles.d (root) with group www-data; the
+  // socket inherits that group, so only nginx (and the app user) can connect.
+  if (existsSync(authSocket)) {
+    const st = lstatSync(authSocket);
+    if (!st.isSocket()) {
+      console.error(
+        `error: ${authSocket} exists and is not a socket; refusing to start`,
+      );
+      process.exit(1);
+    }
+    unlinkSync(authSocket);
+  }
+  const internal = express();
+  internal.use(cookieParser());
+  internal.get("/internal/auth", handleInternalAuth);
+  const internalServer = createServer(internal);
+  internalServer.on("error", (err) => {
+    console.error(
+      `error: could not listen on the auth socket ${authSocket}: ${err.message}`,
+    );
+    process.exit(1);
+  });
+  internalServer.listen(authSocket, () => {
+    chmodSync(authSocket, 0o660);
+    console.log(`internal auth socket: ${authSocket}`);
+  });
+}

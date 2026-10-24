@@ -218,11 +218,23 @@ EOF
 
 do_apply() {
   [[ -z "$ONLY" || "$ONLY" == "ssh-access" ]] && apply_step_ssh_access
-  if [[ -z "$ONLY" || "$ONLY" == "wireguard" ]]; then
-    apply_step_wireguard
-    apply_step_wireguard_peers
+
+  # A single host has no peers to reach, so WireGuard is skipped by default
+  # (SKIP_WIREGUARD=1 forces the skip on a multi-host setup; --only wireguard
+  # still runs it explicitly).
+  local skip_wg=0
+  if ((${#HOST_ROLES[@]} == 1)); then skip_wg=1; fi
+  if [[ "${SKIP_WIREGUARD:-0}" == "1" ]]; then skip_wg=1; fi
+  if [[ "$ONLY" == "wireguard" || "$ONLY" == "wireguard-peers" ]]; then skip_wg=0; fi
+  if (( skip_wg )); then
+    echo "== wireguard: skipped (single host or SKIP_WIREGUARD=1) =="
+  else
+    if [[ -z "$ONLY" || "$ONLY" == "wireguard" ]]; then
+      apply_step_wireguard
+      apply_step_wireguard_peers
+    fi
+    [[ "$ONLY" == "wireguard-peers" ]] && apply_step_wireguard_peers
   fi
-  [[ "$ONLY" == "wireguard-peers" ]] && apply_step_wireguard_peers
   if [[ -z "$ONLY" || "$ONLY" == "snikket" ]]; then apply_step_snikket; fi
   if [[ -z "$ONLY" || "$ONLY" == "bifrost" ]]; then apply_step_bifrost; fi
   if [[ -z "$ONLY" || "$ONLY" == "nginx" ]]; then apply_step_nginx; fi
@@ -261,6 +273,11 @@ do_check() {
   echo "  ssh user:       $BOOTSTRAP_SSH_USER (init via ${INIT_SSH_USER:-<none>})"
   echo "  snikket domain: ${SNIKKET_DOMAIN:-<unset>} on ${SNIKKET_HOST}"
   echo "  bifrost:        ${BIFROST_DOMAIN:-<unset>} on ${BIFROST_HOST:-$HUB}"
+  if ((${#HOST_ROLES[@]} == 1)) || [[ "${SKIP_WIREGUARD:-0}" == "1" ]]; then
+    echo "  wireguard:      skipped (single host or SKIP_WIREGUARD=1)"
+  else
+    echo "  wireguard:      hub ${HUB} (${WG_HUB_IP:-<unset>})"
+  fi
   for h in "${!HOST_ROLES[@]}"; do
     echo "== ${h} [${HOST_ROLES[$h]}] =="
     run_check "$BOOTSTRAP_SSH_USER" "$(ssh_addr "$h")" || \

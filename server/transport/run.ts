@@ -18,6 +18,50 @@ function shq(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+// A host whose ssh target is `localhost` is the machine the app itself runs on.
+// There is no point (and no dependency) in ssh-ing to it: run the script
+// directly as root with a clean environment. Same stdin/exit-code contract.
+const SAFE_PATH =
+  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+export function isLocalTarget(sshTarget: string): boolean {
+  return sshTarget.trim().toLowerCase() === "localhost";
+}
+
+export interface RemoteCommand {
+  cmd: string;
+  args: string[];
+  local: boolean;
+}
+
+/** The command that runs a script as root on `sshTarget`. */
+export function remoteCommand(sshTarget: string, sshUser: string): RemoteCommand {
+  if (isLocalTarget(sshTarget)) {
+    // env -i keeps the app's environment (and its secrets) out of the script;
+    // the script's own variables arrive on stdin, as over ssh.
+    return {
+      cmd: "sudo",
+      args: ["-n", "env", "-i", `PATH=${SAFE_PATH}`, "bash", "-s"],
+      local: true,
+    };
+  }
+  return {
+    cmd: "ssh",
+    args: [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=10",
+      `${sshUser}@${sshTarget}`,
+      "sudo",
+      "-n",
+      "bash",
+      "-s",
+    ],
+    local: false,
+  };
+}
+
 /**
  * Runs a script on a remote host as root: feeds the script (plus exported env
  * vars) to `ssh <user>@<target> 'sudo -n bash -s'`, streaming stdout/stderr
@@ -33,22 +77,12 @@ export function runRemote(opts: RunRemoteOptions): Promise<RunRemoteResult> {
     timeoutMs = 120_000,
   } = opts;
 
+  const { cmd, args } = remoteCommand(sshTarget, sshUser);
   return new Promise((resolve) => {
-    const child = spawn(
-      "ssh",
-      [
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=10",
-        `${sshUser}@${sshTarget}`,
-        "sudo",
-        "-n",
-        "bash",
-        "-s",
-      ],
-      { stdio: ["pipe", "pipe", "pipe"], detached: true },
-    );
+    const child = spawn(cmd, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
+    });
 
     const chunks: Buffer[] = [];
     let timedOut = false;

@@ -108,7 +108,11 @@ export async function reconcileUserSites(opts: {
       KUNGURU_ROUTES: JSON.stringify(routes),
       KUNGURU_LOCAL_SITES: JSON.stringify(local),
       KUNGURU_SITES_CERT: SITES_CERT_NAME,
-      KUNGURU_AUTH_TARGET: `127.0.0.1:${config.runtime.port}`,
+      // The auth subrequest target: the app's unix socket when configured,
+      // else its loopback TCP address.
+      KUNGURU_AUTH_TARGET: config.runtime.authSocket
+        ? `unix:${config.runtime.authSocket}`
+        : `127.0.0.1:${config.runtime.port}`,
       // The login app's own host (`users.<base>`); require_auth hosts redirect
       // there with `next=<original URL>`.
       ...(PRIVATE_DOMAIN ? { KUNGURU_AUTH_HOST: PRIVATE_DOMAIN } : {}),
