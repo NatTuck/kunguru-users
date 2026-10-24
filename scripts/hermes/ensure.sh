@@ -487,43 +487,50 @@ tmp_local="$(mktemp)"
 cat > "$tmp_skill" <<'KUNGURU_SITES_SKILL'
 ---
 name: kunguru-sites
-description: "Deploy and host web sites/apps for a kunguru tenant under the current multi-tenant scheme. The gateway nginx, TLS certificates, and DNS are managed centrally by the kunguru-users app; you run your app on the assigned slot port and it appears at <user>.<base> (public) or <user>.users.<base> (private, app-session gated). Also covers admin-mediated hostname aliases."
-version: 1.0.0
+description: "Deploy and host web apps and static sites for a kunguru tenant. The gateway nginx, TLS, DNS, and the user-server static nginx are managed centrally; you run your app on the app or app-dev port, or publish static files into ~/www/<label>."
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
 metadata:
   hermes:
-    tags: [kunguru, sites, hosting, deploy, nginx, reverse-proxy, public-site, private-app, alias, tls]
+    tags: [kunguru, sites, hosting, deploy, static-site, app, tls]
     related_skills: [kunguru-operations]
 ---
 
-# kunguru tenant site deployment (current scheme)
+# kunguru tenant site deployment
 
-This supersedes the old "kunguru-nginx / ~/www / ~/sites" deployment guidance.
-Under the current scheme a tenant never touches nginx, certbot, or DNS: you run
-your app on an assigned slot port and the gateway routes and secures it.
+This supersedes the old "kunguru-nginx / ~/www / ~/sites" guidance. A tenant
+never touches nginx, certbot, or DNS: the platform runs nginx on your host for
+static sites and on the gateway for routing/TLS.
 
 ## Read first
 
-`references/local.md` (same directory) lists YOUR hostnames, ports, bind address,
-and trusted-proxy address. Read it before deploying anything.
+`references/local.md` (same directory) lists YOUR hostnames, ports, bind
+address, and trusted-proxy address. Read it before deploying anything.
 
 ## The model
 
-The gateway host runs nginx and the **kunguru-users** app. The app renders the
-per-user reverse-proxy routes and the combined TLS certificate from its database
-and a fixed port formula. Each tenant gets three fixed **slots**:
+Each account (a user, or a group) gets one app with two variants plus a managed
+WebUI:
 
 | Slot | Hostname | Port | Access |
 |---|---|---|---|
-| public-site | `<user>.<base>` | 12000 + id | public, no auth |
-| private-app | `<user>.users.<base>` | 13000 + id | app session (auth_request) |
-| hermes-webui | `<user>-agent.users.<base>` | 11000 + id | app session (managed) |
+| app | `<account>.<base>` | 12000 + id | optional auth (or require_auth) |
+| app-dev | `<account>-dev.<base>` | 13000 + id | optional auth (or require_auth) |
+| hermes-webui | `<account>-agent.<base>` | 11000 + id | app session (managed) |
 
-`<id>` is the tenant's numeric user id; see `references/local.md` for yours. All
-three slots are proxied over the VPN to your host, so a service bound to a slot
-port is reachable immediately.
+`<id>` is the account's numeric id (see `references/local.md`). All three are
+proxied over the VPN to your host, so a service bound to a slot port is
+reachable immediately.
+
+## Where code and files live
+
+- App code: `~/.local/apps/app` (production) and `~/.local/apps/app-dev` (dev).
+- Units: `~/.config/systemd/user/app.service` and `app-dev.service`.
+- Static sites: source/build projects in `~/sites/<label>`; the **served
+  docroot** is `~/www/<label>` (the built output). The platform's nginx on your
+  host serves `~/www/<label>`; you do not run a server for static sites.
 
 ### Authentication and identity
 
@@ -544,8 +551,9 @@ redirect the browser to:
 https://users.<base>/login?next=<urlencoded absolute URL of the current page>
 ```
 
-The user is returned to `next` after signing in. The WebUI host is
-`require_auth`, so the gateway handles its login redirect automatically.
+The user is returned to `next` after signing in. The WebUI and any host marked
+`require_auth` (an app or a static site) get that redirect from the gateway
+automatically.
 
 Your app should:
 
@@ -554,42 +562,28 @@ Your app should:
 - do **no** password login of its own;
 - use `Remote-User` / `Remote-Groups` for identity and authorization.
 
-## Deploying a public site
+## Deploying your app
 
-1. Put the code on your host (e.g. `~/.local/apps/<app>`).
-2. Run it bound to the public-site port from `references/local.md`.
-3. Open `https://<user>.<base>/`.
+1. Put production code in `~/.local/apps/app` and dev code in
+   `~/.local/apps/app-dev`.
+2. Run each on its slot port from `references/local.md`, bound to the bind
+   address.
+3. Open `https://<account>.<base>/` (production) or
+   `https://<account>-dev.<base>/` (dev).
 
-## Deploying a private app
-
-Same as a public site, but bind the private-app port and read `Remote-User` for
-the signed-in user. Example (Express):
-
-```js
-// Substitute the trusted-proxy address from references/local.md.
-const GATEWAY_WG_IP = "10.0.0.1";
-app.use((req, res, next) => {
-  const peer = (req.socket.remoteAddress || "").replace("::ffff:", "");
-  req.user = peer === GATEWAY_WG_IP ? (req.get("Remote-User") || null) : null;
-  next();
-});
-```
-
-## Run under systemd --user
-
-Wrap the app in a user unit with `Restart=always`. Linger is already enabled, so
-it starts at boot.
+Example unit (production; mirror it for `app-dev` with the dev port):
 
 ```
-# ~/.config/systemd/user/<app>.service
+# ~/.config/systemd/user/app.service
 [Unit]
 Description=<app>
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=%h/.local/apps/<app>
-Environment=PORT=13000
+WorkingDirectory=%h/.local/apps/app
+Environment=PORT=12000
+Environment=HOST=<bind address>
 ExecStart=%h/.local/bin/node server.js
 Restart=always
 RestartSec=3
@@ -600,45 +594,46 @@ WantedBy=default.target
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now <app>
+systemctl --user enable --now app
 ```
+
+## Static sites
+
+Static sites are owned by a user or group, limited to **5 per owner**. The
+platform serves them with nginx on your host; you only publish files:
+
+- source/build project: `~/sites/<label>`
+- served docroot: `~/www/<label>` (put the built output here)
+- URL: `https://<label>.<base>/`
+
+Build into `~/www/<label>` (for example copy `dist/` or `book/` there). The
+platform creates the directory and the nginx route; ask the operator to add the
+static site (or use the app's self-service page when available). Do not run your
+own nginx or per-site vhosts.
 
 ## TLS, certificates, DNS
 
-Automatic. The kunguru-users app reconciles the combined certificate (all tenant
-and alias hostnames) and the DNS wildcard already covers your labels. Do **not**
+Automatic. The platform reconciles the wildcard certificate and DNS. Do **not**
 run certbot, and do not create certificates yourself.
-
-## Aliases (extra hostnames) — admin-mediated
-
-Aliases are rows in the kunguru-users app, managed by an **admin**:
-
-- a **proxy** alias points at one of YOUR three slot services (`private-app`,
-  `public-site`, or `hermes-webui`);
-- a **static** alias serves a docroot on the **gateway** host, so it is not
-  usable from a tenant host.
-
-A public alias appears at `<label>.<base>`; a private alias at
-`<label>.users.<base>` (same session auth, owner = you). To get one, run your app
-on the target slot port and ask the operator to add `<label> -> <service>`. You
-cannot create aliases yourself.
 
 ## Do NOT
 
 - Start, edit, or reload nginx; do not write under `/etc/nginx`.
-- Use `kunguru-nginx` (not installed on tenant hosts) or `sudo`.
 - Run `certbot` or manage certificates.
-- Serve sites from `~/www` or add per-site vhosts; that scheme is retired.
+- Serve app code from `~/sites` or `~/www`; those are static-site source and
+  docroot paths.
+- Use `kunguru-nginx` or `sudo`.
 
 ## Verification and common statuses
 
-- Deploy, then `curl -sI https://<user>.<base>/` -> 200 (or the app's own code).
+- App: `curl -sI https://<account>.<base>/` -> 200.
+- Static site: `curl -sI https://<label>.<base>/` -> 200.
 - `502` at a slot host = the gateway route is fine but **nothing is listening**
   on the slot port (your app is down or bound to the wrong port/address).
-- `404` = no route for that hostname (user disabled, or the label is not
-  configured as an alias).
-- A private host returns `302` to `https://users.<base>/login` when signed out —
-  that is the auth gate working; sign in and retry.
+- `404` = no route for that hostname (account disabled, or the label is not a
+  configured app/static site).
+- A `require_auth` host returns `302` to `https://users.<base>/login` when
+  signed out — that is the auth gate working; sign in and retry.
 KUNGURU_SITES_SKILL
 
 # Generated per-tenant facts so the skill body stays generic across tenants.
@@ -654,17 +649,20 @@ if [[ -n "$base_domain" && "$user_id" =~ ^[0-9]+$ ]]; then
     echo
     echo "| Hostname | Slot | Port | Access | Remote-User |"
     echo "|---|---|---|---|---|"
-    echo "| ${USERNAME}.${base_domain} | public-site | $((12000 + user_id)) | public | blanked |"
-    echo "| ${USERNAME}.users.${base_domain} | private-app | $((13000 + user_id)) | app session | ${USERNAME} |"
-    echo "| ${USERNAME}-agent.users.${base_domain} | hermes-webui | $((11000 + user_id)) | app session | ${USERNAME} |"
+    echo "| ${USERNAME}.${base_domain} | app | $((12000 + user_id)) | optional (or require_auth) | when signed in |"
+    echo "| ${USERNAME}-dev.${base_domain} | app-dev | $((13000 + user_id)) | optional (or require_auth) | when signed in |"
+    echo "| ${USERNAME}-agent.${base_domain} | hermes-webui | $((11000 + user_id)) | app session | ${USERNAME} |"
+    echo
+    echo "Static sites: source ~/sites/<label>, served docroot ~/www/<label>, URL https://<label>.${base_domain}/"
   } > "$tmp_local"
 else
   cat > "$tmp_local" <<'KUNGURU_SITES_LOCAL'
 # Your deployment
 
 Hostnames and ports were not supplied to this converge (`KUNGURU_USER_ID` /
-`KUNGURU_BASE_DOMAIN` unset). Ask the operator for this tenant's three slot hosts
-and ports, or re-run the provision step from the kunguru-users app.
+`KUNGURU_BASE_DOMAIN` unset). Ask the operator for this account's app/app-dev/
+WebUI hosts and ports, or re-run the provision step from the kunguru-users app.
+Static sites use `~/sites/<label>` (source) and `~/www/<label>` (served).
 KUNGURU_SITES_LOCAL
 fi
 write_guarded "$skill_dir/SKILL.md" "$skill_dir/.app-hash.skill" "$tmp_skill"

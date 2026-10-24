@@ -57,9 +57,10 @@ GET https://users.<base>/login?next=<urlencoded absolute URL>
 
 ### Required-auth hosts
 
-A host marked `require_auth` (the WebUI) is handled entirely by the gateway:
-nginx returns `401` and redirects to the login page with
-`next=<current URL>`. The app needs no login code.
+A host marked `require_auth` (the WebUI, an app with `require_auth`, or a
+`require_auth` static site) is handled entirely by the gateway: nginx returns
+`401` and redirects to the login page with `next=<current URL>`. The app needs no
+login code.
 
 ### Optional hosts (default)
 
@@ -161,6 +162,9 @@ app.get("/private", (req, res) => {
   only one that keeps it). The broad `Domain=<base>` cookie is fail-open: any
   hand-managed/legacy vhost that forgets the strip will hand the session cookie
   to its upstream. Audit all vhosts before broadening the cookie on a host.
+- **The user-server static nginx** must only accept the gateway's WG IP
+  (`allow <gateway-wg-ip>; deny all;`); `require_auth` static sites are gated at
+  the gateway before the request is forwarded.
 
 ---
 
@@ -171,7 +175,14 @@ app.get("/private", (req, res) => {
   adds optional/required behavior to `/internal/auth`. `sanitizeNext` is
   broadened to accept single-label hosts under `<base>` (and keeps
   `.users.<base>` during the migration).
-- **Phase 3** retires the `.users.` subtree; from then on `next` targets are
-  `<label>.<base>` only and the cert is `*.<base>`.
-- Until Phase 3, existing `private` aliases/hosts remain `require_auth` and
-  `public` ones become optional-auth with identity when present.
+- **Two-port model**: the old slots become app `<account>.<base>` (`12000+id`),
+  app-dev `<account>-dev.<base>` (`13000+id`), and WebUI
+  `<account>-agent.<base>` (`11000+id`). Existing private apps at `13000+id` move
+  to `<user>-dev.<base>`; public apps stay `<user>.<base>`; WebUIs move to
+  `<user>-agent.<base>`. The `.users.` subtree is retired.
+- **Static sites** are served by nginx on the owner's host; the gateway forwards
+  `<label>.<base>` to `<owner-host>:<static-port>` and applies the
+  `require_auth` gate. Source lives at `~/sites/<label>`; the served docroot is
+  `~/www/<label>`.
+- Until the migration completes, existing `private` hosts remain `require_auth`
+  and `public` hosts become optional-auth with identity when present.
