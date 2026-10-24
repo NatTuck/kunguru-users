@@ -1,0 +1,177 @@
+# App authentication protocol (kunguru gateway)
+
+Status: **agreed, not implemented** (Phase 1 of
+`notes/groups-and-apps.md`). Audience: tenant app authors; the same contract
+should be embedded in the `kunguru-sites` skill.
+
+The gateway is the only authentication authority. Apps never implement password
+login and never see the session cookie. They receive **verified identity
+headers** from the gateway and, when they need a login, redirect to the central
+login page.
+
+---
+
+## 1. Identity headers
+
+The gateway sets these on every proxied app request, always overwriting any
+client-supplied value:
+
+| Header | Value |
+|---|---|
+| `Remote-User` | the signed-in username, or empty for anonymous |
+| `Remote-Groups` | comma-separated group names the user belongs to, or empty |
+
+Rules:
+
+- **Empty `Remote-User` = anonymous.** Never treat a missing header as an
+  identity.
+- The gateway **strips the session cookie** (`kunguru_sid`) before proxying
+  (request `Cookie` and response `Set-Cookie`). Apps must not expect it and must
+  not try to read it.
+- The gateway strips any inbound `Remote-User`/`Remote-Groups` from the client
+  and re-sets them, so they cannot be spoofed through the proxy.
+- Apps must trust these headers **only** from the gateway's WireGuard IP (the
+  same trusted-proxy contract as today). Bind the address the gateway reaches,
+  and compare the TCP peer.
+
+---
+
+## 2. Login redirect (the standard protocol)
+
+When an app wants the visitor to sign in, redirect the browser to:
+
+```
+GET https://users.<base>/login?next=<urlencoded absolute URL>
+```
+
+- `<base>` is the instance domain (e.g. `kunguru.net`); the auth host is
+  `users.<base>`.
+- `next` is the absolute URL the user should return to. Build it from the
+  current request, e.g. `https://<app-host><path>` and URL-encode it.
+- The login page signs the user in, then navigates to the server-validated
+  `next` (`window.location.replace(redirectTo)`).
+- `next` is validated server-side: same-origin absolute paths, or a
+  **single-label host under `<base>`** (`<label>.<base>`). During the `.users.`
+  migration window, single-label hosts under `users.<base>` are also allowed.
+  Anything else is rejected (no open redirects).
+
+### Required-auth hosts
+
+A host marked `require_auth` (the WebUI) is handled entirely by the gateway:
+nginx returns `401` and redirects to the login page with
+`next=<current URL>`. The app needs no login code.
+
+### Optional hosts (default)
+
+Most apps are optional: anonymous is allowed and `Remote-User` is populated when
+the visitor is signed in. If the app wants to require login for a particular
+action, it redirects to the login URL itself:
+
+```js
+if (!req.user) {
+  const next = `https://${req.get("host")}${req.originalUrl}`;
+  return res.redirect(
+    `https://users.example.net/login?next=${encodeURIComponent(next)}`
+  );
+}
+```
+
+---
+
+## 3. Auth status (JSON)
+
+For SPAs that need client-side user info:
+
+```
+GET https://users.<base>/api/auth/me
+```
+
+- `200 { "user": { id, username, role, created_at } }` when signed in.
+- `401` when anonymous.
+
+The server-side `Remote-User` remains the authoritative identity for the app's
+own backend; this endpoint is for client-side display/state.
+
+---
+
+## 4. Logout
+
+```
+POST https://users.<base>/api/auth/logout
+```
+
+Clears the session cookie. The app then navigates back to itself (or to the
+auth host's login page). Because the session cookie is scoped to `<base>`, a
+logout affects every app host.
+
+---
+
+## 5. Example (Express)
+
+`example.net` below stands for your instance's `<base>`.
+
+```js
+const GATEWAY_WG_IP = "10.10.1.1"; // from references/local.md
+
+app.use((req, res, next) => {
+  const peer = (req.socket.remoteAddress || "").replace("::ffff:", "");
+  const trusted = peer === GATEWAY_WG_IP;
+  req.user = trusted ? (req.get("Remote-User") || null) : null;
+  req.groups = trusted
+    ? (req.get("Remote-Groups") || "").split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  next();
+});
+
+// Optional auth: anonymous is allowed; identity is available when signed in.
+app.get("/", (req, res) => {
+  res.send(req.user ? `Hello ${req.user}` : "Hello, anonymous");
+});
+
+// Require auth for an action: redirect to the central login.
+app.get("/private", (req, res) => {
+  if (!req.user) {
+    const next = `https://${req.get("host")}${req.originalUrl}`;
+    return res.redirect(
+      `https://users.example.net/login?next=${encodeURIComponent(next)}`
+    );
+  }
+  res.send(`Hello ${req.user}; groups: ${req.groups.join(", ") || "none"}`);
+});
+```
+
+---
+
+## 6. Security notes
+
+- **Trust only the gateway's WG IP** for `Remote-*`. Ignore them from any other
+  peer.
+- **Do not read or forward the session cookie** — it is stripped by the gateway.
+- **CSRF/origin checks** are still required for state-changing endpoints:
+  subdomains of `<base>` are *same-site*, so `SameSite` cookies do not protect
+  the auth host from a compromised sibling app. Validate `Origin`/`Referer` (or
+  use a CSRF token) on the auth app's mutating routes.
+- Apps are trusted to act for the signed-in user **on their own requests**;
+  they cannot use `Remote-User` against another app (it is set per request by
+  the gateway).
+- `next` is validated by the auth server; do not construct cross-site targets.
+- Keep `Remote-*` out of logs if you log request headers.
+- **Every vhost that proxies to an upstream must strip `kunguru_sid`** (the
+  repo-managed user-sites, Snikket, and Bifrost vhosts do; the auth app is the
+  only one that keeps it). The broad `Domain=<base>` cookie is fail-open: any
+  hand-managed/legacy vhost that forgets the strip will hand the session cookie
+  to its upstream. Audit all vhosts before broadening the cookie on a host.
+
+---
+
+## 7. Migration notes
+
+- **Phase 1** broadens the session cookie to `Domain=<base>`, strips it on every
+  upstream vhost except the auth app, injects `Remote-User`/`Remote-Groups`, and
+  adds optional/required behavior to `/internal/auth`. `sanitizeNext` is
+  broadened to accept single-label hosts under `<base>` (and keeps
+  `.users.<base>` during the migration).
+- **Phase 3** retires the `.users.` subtree; from then on `next` targets are
+  `<label>.<base>` only and the cert is `*.<base>`.
+- Until Phase 3, existing `private` aliases/hosts remain `require_auth` and
+  `public` ones become optional-auth with identity when present.

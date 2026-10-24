@@ -23,9 +23,11 @@ export const SNIKKET_HOST_NAME = config.snikketHost;
 export const BASE_DOMAIN = config.domain;
 export const PRIVATE_DOMAIN = config.cookieDomain;
 
-// Session cookie Domain. Defaults to the private subtree so the browser also
-// sends the session to `<user>.users.<base>`.
-export const COOKIE_DOMAIN = config.cookieDomain;
+// Session cookie Domain: the base domain, so the gateway sees the session on
+// every `<label>.<base>` app host and can inject the verified Remote-User /
+// Remote-Groups headers. The session cookie is stripped before proxying to
+// tenant apps (scripts/nginx/ensure-user-sites.sh); only the auth app sees it.
+export const COOKIE_DOMAIN = config.domain;
 
 // Host that runs nginx; per-user site routes are rendered there.
 export const GATEWAY_HOST_NAME = config.gatewayHost;

@@ -525,20 +525,34 @@ and a fixed port formula. Each tenant gets three fixed **slots**:
 three slots are proxied over the VPN to your host, so a service bound to a slot
 port is reachable immediately.
 
-### Private slots inject identity
+### Authentication and identity
 
-For `<user>.users.<base>` (and private aliases), the gateway validates the
-`users.<base>` app-session cookie and forwards the owner's username as the
-header `Remote-User`. Your app should:
+The gateway authenticates every request (optionally) and forwards verified
+headers; it also strips the session cookie, so your app never sees it:
+
+- `Remote-User` — the signed-in username, or empty for anonymous.
+- `Remote-Groups` — comma-separated group names, or empty.
+
+Trust these headers **only** when the TCP peer is the gateway's WG IP
+(`references/local.md`); ignore them from any other peer.
+
+Authentication is **optional by default**: anonymous is allowed and
+`Remote-User` is populated when the visitor is signed in. To require a login,
+redirect the browser to:
+
+```
+https://users.<base>/login?next=<urlencoded absolute URL of the current page>
+```
+
+The user is returned to `next` after signing in. The WebUI host is
+`require_auth`, so the gateway handles its login redirect automatically.
+
+Your app should:
 
 - bind to the address in `references/local.md` (the VPN/LAN address the gateway
   reaches), not just loopback;
-- trust `Remote-User` **only** when the TCP peer is the gateway's WG IP
-  (`references/local.md`); ignore it otherwise;
-- do **no** login of its own; the signed-in identity is `Remote-User`;
-- send unauthenticated users to `https://users.<base>/` to log in.
-
-For public slots, `Remote-User` is stripped (blank). Never trust it there.
+- do **no** password login of its own;
+- use `Remote-User` / `Remote-Groups` for identity and authorization.
 
 ## Deploying a public site
 

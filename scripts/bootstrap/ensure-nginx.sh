@@ -24,6 +24,21 @@
 
 need SNIKKET_DOMAIN
 
+# Session-cookie stripping map, shared with the app-rendered user-sites vhost.
+# Canonical copy: scripts/nginx/session-cookie-map.conf. This script is piped
+# over stdin by bootstrap.sh, so it embeds the text rather than reading the file.
+mkdir -p /etc/nginx/conf.d
+cat > /etc/nginx/conf.d/kunguru-session-cookie.conf <<'SESSION_MAP'
+map $http_cookie $kunguru_cookie_1 {
+    default $http_cookie;
+    "~^(?<kunguru_pre>.*?)(?:;\s*)?kunguru_sid=[^;]*(?<kunguru_post>;.*)?$" "$kunguru_pre$kunguru_post";
+}
+map $kunguru_cookie_1 $kunguru_cookie {
+    "~^;\s*(?<kunguru_rest>.*)$" $kunguru_rest;
+    default $kunguru_cookie_1;
+}
+SESSION_MAP
+
 http_port="${SNIKKET_TWEAK_HTTP_PORT:-5080}"
 https_port="${SNIKKET_TWEAK_HTTPS_PORT:-5443}"
 wg_iface="${WG_IFACE:-wg0}"
@@ -125,6 +140,7 @@ server {
         proxy_set_header Host              \$host;
         proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto http;
+        proxy_set_header Cookie            \$kunguru_cookie;
         client_max_body_size 104857616;
         proxy_set_header Connection \$http_connection;
         proxy_set_header Upgrade \$http_upgrade;
@@ -151,6 +167,7 @@ server {
         proxy_set_header Host              \$host;
         proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Cookie            \$kunguru_cookie;
         proxy_ssl_server_name on;
         proxy_ssl_verify off;
         proxy_ssl_name \$host;
@@ -211,6 +228,7 @@ server {
         proxy_set_header Host              \$host;
         proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Cookie            \$kunguru_cookie;
         client_max_body_size 104857616;
         proxy_http_version 1.1;
         proxy_buffering off;
@@ -240,6 +258,7 @@ server {
         proxy_set_header Host              \$host;
         proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Cookie            \$kunguru_cookie;
         client_max_body_size 104857616;
         proxy_http_version 1.1;
         proxy_buffering off;

@@ -38,6 +38,20 @@ command -v nginx >/dev/null || { echo "nginx not installed" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 required" >&2; exit 1; }
 mkdir -p "$webroot"
 
+# Strip the session cookie before proxying to tenant apps; the gateway injects
+# Remote-User/Remote-Groups instead. Reference copy:
+# scripts/nginx/session-cookie-map.conf (also embedded by ensure-nginx.sh).
+cat > /etc/nginx/conf.d/kunguru-session-cookie.conf <<'SESSION_MAP'
+map $http_cookie $kunguru_cookie_1 {
+    default $http_cookie;
+    "~^(?<kunguru_pre>.*?)(?:;\s*)?kunguru_sid=[^;]*(?<kunguru_post>;.*)?$" "$kunguru_pre$kunguru_post";
+}
+map $kunguru_cookie_1 $kunguru_cookie {
+    "~^;\s*(?<kunguru_rest>.*)$" $kunguru_rest;
+    default $kunguru_cookie_1;
+}
+SESSION_MAP
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -86,8 +100,8 @@ private_server = """server {{
     ssl_certificate_key {cert_dir}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    # nginx validates the app session here and forwards the owning username as
-    # the trusted Remote-User header the upstream consumes.
+    # The gateway authenticates the request (optionally) and injects the
+    # verified identity; the session cookie is stripped before proxying.
     location = /__auth {{
         internal;
         proxy_pass http://{auth_target}/internal/auth;
@@ -99,8 +113,10 @@ private_server = """server {{
     location / {{
         auth_request /__auth;
         auth_request_set $auth_user $upstream_http_x_auth_user;
+        auth_request_set $auth_groups $upstream_http_x_auth_groups;
         proxy_set_header Remote-User $auth_user;
-        proxy_set_header Remote-Groups "";
+        proxy_set_header Remote-Groups $auth_groups;
+        proxy_set_header Cookie $kunguru_cookie;
 
         if ($kunguru_upstream = "") {{ return 404; }}
         proxy_pass http://$kunguru_upstream;
@@ -130,22 +146,42 @@ public_server = """server {{
     ssl_certificate_key {cert_dir}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 
+    # Optional auth: the gateway injects identity when a session is present and
+    # allows anonymous otherwise. Hosts that require auth (e.g. `-agent`
+    # WebUIs) get a 401 and are redirected to the login page.
+    location = /__auth {{
+        internal;
+        proxy_pass http://{auth_target}/internal/auth;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-Host $host;
+    }}
+
     location / {{
+        auth_request /__auth;
+        auth_request_set $auth_user $upstream_http_x_auth_user;
+        auth_request_set $auth_groups $upstream_http_x_auth_groups;
         if ($kunguru_upstream = "") {{ return 404; }}
         proxy_pass http://$kunguru_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header Remote-User "";
-        proxy_set_header Remote-Groups "";
+        proxy_set_header Remote-User $auth_user;
+        proxy_set_header Remote-Groups $auth_groups;
+        proxy_set_header Cookie $kunguru_cookie;
         proxy_http_version 1.1;
         proxy_buffering off;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
         client_max_body_size 64m;
     }}
+
+    error_page 401 = @login;
+    location @login {{
+        return 302 https://{private}/login?next=$scheme://$host$request_uri;
+    }}
 }}
-""".format(base=base, cert_dir=cert_dir)
+""".format(base=base, private=private, cert_dir=cert_dir, auth_target=auth_target)
 
 open(os.path.join(tmp, "sites-http.conf"), "w").write(header + http_server)
 

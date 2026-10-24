@@ -12,7 +12,7 @@ import {
   touchSession,
   type PublicUser,
 } from "./db";
-import { COOKIE_DOMAIN, PRIVATE_DOMAIN } from "./inventory";
+import { BASE_DOMAIN, COOKIE_DOMAIN, PRIVATE_DOMAIN } from "./inventory";
 
 export const SESSION_COOKIE = "kunguru_sid";
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -54,14 +54,31 @@ function setSessionCookie(res: Response, token: string): void {
     ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
     maxAge: SESSION_TTL_MS,
   });
+  // Migration: the cookie used to be scoped to the private subtree. Drop that
+  // one on login so a stale (possibly different-user) session can't win the
+  // duplicate when the browser sends both.
+  clearLegacySessionCookie(res);
 }
 
 function clearSessionCookie(res: Response): void {
+  for (const domain of [COOKIE_DOMAIN, PRIVATE_DOMAIN]) {
+    if (!domain) continue;
+    res.clearCookie(SESSION_COOKIE, {
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      domain,
+    });
+  }
+}
+
+function clearLegacySessionCookie(res: Response): void {
+  if (!PRIVATE_DOMAIN || PRIVATE_DOMAIN === COOKIE_DOMAIN) return;
   res.clearCookie(SESSION_COOKIE, {
     path: "/",
     httpOnly: true,
     sameSite: "lax",
-    ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
+    domain: PRIVATE_DOMAIN,
   });
 }
 
@@ -88,7 +105,8 @@ export function resolveSession(
   if (
     !found ||
     found.session.expires_at <= Date.now() ||
-    !found.user.enabled
+    !found.user.enabled ||
+    found.user.kind !== "user"
   ) {
     if (found) deleteSession(db, tokenHash);
     return null;
@@ -152,7 +170,7 @@ export async function loginHandler(
   const db = getDb();
   const user = getUserByUsername(db, username);
   const ok = user ? await verifyPassword(user.password_hash, password) : false;
-  if (!ok || !user || !user.enabled) {
+  if (!ok || !user || !user.enabled || user.kind !== "user") {
     noteLoginFailure(username);
     // Generic message; do not reveal whether the user exists.
     res.status(401).json({ error: "invalid username or password" });
@@ -164,16 +182,20 @@ export async function loginHandler(
   const tokenHash = sha256(token);
   insertSession(db, tokenHash, user.id, Date.now() + SESSION_TTL_MS);
   setSessionCookie(res, token);
-  res.json({ user: toPublic(user), redirectTo: sanitizeNext(next, PRIVATE_DOMAIN) });
+  res.json({ user: toPublic(user), redirectTo: sanitizeNext(next, BASE_DOMAIN, PRIVATE_DOMAIN) });
 }
 
 /**
  * Validate a post-login `next` target. Allows same-origin absolute paths and
- * cross-origin URLs only on a single-label host under the private subtree
- * (`<user>.users.<base>` / `<user>-agent.users.<base>`). Returns null when
- * unsafe.
+ * cross-origin URLs only on a single-label host under the base domain
+ * (`<label>.<base>`) or, during the `.users.` migration, the legacy private
+ * subtree (`<label>.<private>`). Returns null when unsafe.
  */
-export function sanitizeNext(raw: unknown, privateDomain: string): string | null {
+export function sanitizeNext(
+  raw: unknown,
+  baseDomain: string,
+  privateDomain: string,
+): string | null {
   if (typeof raw !== "string") return null;
   const value = raw.trim();
   if (!value) return null;
@@ -189,14 +211,18 @@ export function sanitizeNext(raw: unknown, privateDomain: string): string | null
     return null;
   }
   if (url.protocol !== "https:" || url.username || url.password) return null;
-  const domain = privateDomain.trim().toLowerCase();
-  if (!domain) return null;
-  const suffix = "." + domain;
   const host = url.hostname.toLowerCase();
-  if (!host.endsWith(suffix)) return null;
-  const label = host.slice(0, -suffix.length);
-  if (!label || label.includes(".")) return null;
-  return url.toString();
+  const domains = [baseDomain, privateDomain]
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
+  for (const domain of domains) {
+    const suffix = "." + domain;
+    if (!host.endsWith(suffix)) continue;
+    const label = host.slice(0, -suffix.length);
+    // A single label only: no deeper names, and no empty label.
+    if (label && !label.includes(".")) return url.toString();
+  }
+  return null;
 }
 
 export function logoutHandler(req: Request, res: Response): void {

@@ -21,6 +21,9 @@ export interface User {
   username: string;
   password_hash: string;
   role: Role;
+  kind: "user" | "group";
+  owner_user_id: number | null;
+  require_auth: number;
   enabled: number;
   created_at: string;
 }
@@ -93,9 +96,21 @@ export const SCHEMA = `
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    kind TEXT NOT NULL DEFAULT 'user' CHECK (kind IN ('user', 'group')),
+    owner_user_id INTEGER REFERENCES users(id),
+    require_auth INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS group_members (
+    group_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role     TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'member')),
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (group_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
 
   CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
@@ -197,6 +212,15 @@ function migrate(db: Database.Database): void {
   if (!ucols.some((c) => c.name === "enabled")) {
     db.exec("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1");
   }
+  if (!ucols.some((c) => c.name === "kind")) {
+    db.exec("ALTER TABLE users ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'");
+  }
+  if (!ucols.some((c) => c.name === "owner_user_id")) {
+    db.exec("ALTER TABLE users ADD COLUMN owner_user_id INTEGER REFERENCES users(id)");
+  }
+  if (!ucols.some((c) => c.name === "require_auth")) {
+    db.exec("ALTER TABLE users ADD COLUMN require_auth INTEGER NOT NULL DEFAULT 0");
+  }
   const acols = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
   if (!acols.some((c) => c.name === "bifrost_vk_id")) {
     db.exec("ALTER TABLE accounts ADD COLUMN bifrost_vk_id TEXT");
@@ -279,6 +303,38 @@ export function getUserById(
   return db.prepare("SELECT * FROM users WHERE id = ?").get(id) as
     | User
     | undefined;
+}
+
+/**
+ * Group names a user belongs to, for the `Remote-Groups` header. Returns [] on
+ * databases without the groups schema (the query is forward-compatible with
+ * the Phase 2 `group_members` table).
+ */
+export function listGroupsForUser(
+  db: Database.Database,
+  userId: number,
+): string[] {
+  const rows = db
+    .prepare(
+      `SELECT g.username AS name
+         FROM group_members m
+         JOIN users g ON g.id = m.group_id
+        WHERE m.user_id = ? AND g.enabled = 1
+        ORDER BY g.username ASC`,
+    )
+    .all(userId) as { name: string }[];
+  return rows.map((r) => r.name);
+}
+
+/** Whether a user is a member of a group. */
+export function isGroupMember(
+  db: Database.Database,
+  groupId: number,
+  userId: number,
+): boolean {
+  return !!db
+    .prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?")
+    .get(groupId, userId);
 }
 
 export function listUsers(db: Database.Database): PublicUser[] {
@@ -473,7 +529,7 @@ export function getSessionUser(
        WHERE s.token_hash = ?`,
     )
     .get(tokenHash) as
-    | { token_hash: string; expires_at: number; id: number; username: string; password_hash: string; role: Role; enabled: number; created_at: string }
+    | { token_hash: string; expires_at: number; id: number; username: string; password_hash: string; role: Role; kind: "user" | "group"; owner_user_id: number | null; require_auth: number; enabled: number; created_at: string }
     | undefined;
   if (!row) return undefined;
   const { token_hash, expires_at, ...u } = row;

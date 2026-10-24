@@ -1,11 +1,11 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import ViteExpress from "vite-express";
-import { ensureAdminSeed, ensureHostSeed, getAliasByLabel, getDb, getUserByUsername, ADMIN_USERNAME } from "./db";
+import { ensureAdminSeed, ensureHostSeed, getAliasByLabel, getDb, getUserByUsername, isGroupMember, listGroupsForUser, ADMIN_USERNAME } from "./db";
 import { config } from "./config";
 import { hostSeeds } from "./inventory";
 import { resolveSession } from "./auth";
-import { privateLabelFromHost, privateUsernameFromHost } from "./sites";
+import { privateLabelFromHost, publicLabelFromHost } from "./sites";
 import { api } from "./routes";
 
 const app = express();
@@ -36,40 +36,65 @@ app.get("/internal/auth", (req, res) => {
     res.status(403).end();
     return;
   }
-  // Read-only check (no global sweep); sliding expiry is throttled internally.
-  const ctx = resolveSession(req, { sweep: false, touch: true });
-  if (!ctx) {
-    res.status(401).end();
-    return;
-  }
   const originalHost =
     (req.headers["x-original-host"] as string | undefined) ?? req.headers.host;
-  const label = privateLabelFromHost(originalHost);
+  // Private subtree (`*.users.<base>`) and `-agent` hosts (WebUIs) require a
+  // signed-in user. Every other app host is optional-auth: anonymous is
+  // allowed, and the signed-in identity is injected when present.
+  const privateLabel = privateLabelFromHost(originalHost);
+  const publicLabel =
+    privateLabel == null ? publicLabelFromHost(originalHost) : null;
+  const label = privateLabel ?? publicLabel;
   if (!label) {
     res.status(403).end();
     return;
   }
-  // Owner is the username the label maps to, or (for a private alias label) the
-  // alias's user. Both resolve to a user id compared against the session.
   const db = getDb();
-  let ownerId: number | null = null;
-  const nameOwner = privateUsernameFromHost(originalHost);
-  if (nameOwner) {
-    const u = getUserByUsername(db, nameOwner);
-    if (u) ownerId = u.id;
-  }
-  if (ownerId == null) {
-    const alias = getAliasByLabel(db, label);
-    if (alias && alias.access === "private") ownerId = alias.user_id;
-  }
-  if (ownerId == null || ownerId !== ctx.user.id) {
-    // A valid session that does not own this private host: 401 (not 403) so
-    // nginx redirects to the login form instead of showing a bare 403.
-    res.status(401).end();
+  const alias = getAliasByLabel(db, label);
+  const required =
+    privateLabel != null ||
+    label.endsWith("-agent") ||
+    (alias != null && alias.access === "private");
+
+  // Read-only check (no global sweep); sliding expiry is throttled internally.
+  const ctx = resolveSession(req, { sweep: false, touch: true });
+  if (!ctx) {
+    if (required) {
+      res.status(401).end();
+      return;
+    }
+    // Optional auth: anonymous is allowed; no identity headers.
+    res.setHeader("Cache-Control", "no-store");
+    res.status(200).end();
     return;
   }
+
+  if (required) {
+    // Resolve the principal (strip the `-agent` WebUI suffix) or the alias
+    // owner, and authorize the session user. Groups allow any member; users
+    // allow only themselves.
+    const principalName = label.endsWith("-agent")
+      ? label.slice(0, -"-agent".length)
+      : label;
+    const principal = getUserByUsername(db, principalName);
+    const isGroup =
+      (principal as { kind?: string } | undefined)?.kind === "group";
+    const ownerId =
+      principal?.id ?? (alias?.access === "private" ? alias.user_id : null);
+    const authorized = isGroup && principal
+      ? isGroupMember(db, principal.id, ctx.user.id)
+      : ownerId != null && ownerId === ctx.user.id;
+    if (!authorized) {
+      // A valid session that does not own this host: 401 (not 403) so nginx
+      // redirects to the login form instead of showing a bare 403.
+      res.status(401).end();
+      return;
+    }
+  }
+
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Auth-User", ctx.user.username);
+  res.setHeader("X-Auth-Groups", listGroupsForUser(db, ctx.user.id).join(","));
   res.status(200).end();
 });
 

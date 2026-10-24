@@ -179,6 +179,22 @@ export function privateLabelFromHost(host: string | undefined): string | null {
   return label;
 }
 
+/**
+ * Extract the single label from a public host `<label>.<base>`, or null. The
+ * auth host itself (`users.<base>`) and deeper names (`<a>.<b>.<base>`) return
+ * null; private hosts are handled by `privateLabelFromHost`.
+ */
+export function publicLabelFromHost(host: string | undefined): string | null {
+  if (!host || !BASE_DOMAIN) return null;
+  const h = host.split(":")[0].trim().toLowerCase();
+  const suffix = `.${BASE_DOMAIN}`;
+  if (!h.endsWith(suffix)) return null;
+  const label = h.slice(0, -suffix.length);
+  if (!label || label.includes(".")) return null;
+  if (label === "users") return null; // the auth app host
+  return label;
+}
+
 // Labels double as DNS labels (`<label>.<base>` / `<label>.users.<base>`), so
 // they must be valid labels, must not collide with the reserved `-agent`
 // suffix, and must not shadow infrastructure hostnames.
