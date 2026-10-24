@@ -81,6 +81,7 @@ import {
   type AppAction,
   type AppSlot,
 } from "./apps";
+import { getIdentitySigner } from "./identity";
 import { reconcileSites } from "./nginx";
 import { refreshModelsAndRestartWebuis } from "./models";
 import { BASE_DOMAIN } from "./inventory";
@@ -408,6 +409,19 @@ api.get("/config", (_req, res) => {
   res.json({
     baseDomain: BASE_DOMAIN,
     xmppDomain: XMPP_DOMAIN,
+  });
+});
+
+// --- Identity signing key (public) ---
+// The public half of the key that signs X-Kunguru-Identity tokens. Apps pin
+// this (or read it at deploy time) to verify identity without trusting a peer
+// address. Public by design: a verification key, not a secret.
+api.get("/identity-key", (_req, res) => {
+  const signer = getIdentitySigner();
+  res.json({
+    kid: signer.kid,
+    publicKeyPem: signer.publicKeyPem,
+    publicKeyDer: signer.publicKeyDer,
   });
 });
 

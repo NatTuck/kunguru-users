@@ -53,6 +53,7 @@ user_id="${KUNGURU_USER_ID:-}"
 gateway_wg_ip="${KUNGURU_GATEWAY_WG_IP:-}"
 bind_addr="${KUNGURU_BIND_ADDR:-}"
 trusted_proxy="${KUNGURU_TRUSTED_PROXY:-}"
+identity_pubkey="${KUNGURU_IDENTITY_PUBKEY_DER:-}"
 
 # run_as_user CMD...: run as USERNAME with a clean but functional env, the
 # per-user systemd manager socket (XDG_RUNTIME_DIR) so systemctl --user works,
@@ -563,6 +564,17 @@ Your app should:
 - do **no** password login of its own;
 - use `Remote-User` / `Remote-Groups` for identity and authorization.
 
+## Verified identity token (recommended)
+
+Alongside the headers the gateway sets `X-Kunguru-Identity`: a short-lived
+(60 s) EdDSA JWT signed with the instance key. Verify it against the public key
+in `references/local.md` (base64 SPKI DER), and check that `aud` is your own
+hostname. A missing or invalid token means anonymous — never trust the claims
+of an unverified token. Prefer the token over `Remote-User` when you need an
+unforgeable identity: the header is only as trustworthy as the peer-IP check,
+while a verified token cannot be spoofed by another local process. Tokens are
+audience-bound, so one captured for another host will not validate for yours.
+
 ## Deploying your app
 
 The platform installs two user units for your account:
@@ -641,6 +653,7 @@ if [[ -n "$base_domain" && "$user_id" =~ ^[0-9]+$ ]]; then
     echo "- Login/logout: https://users.${base_domain}/"
     echo "- Bind address: \`${bind_addr:-<the user-host VPN/LAN address>}\`"
     echo "- Trust \`Remote-User\` only from: \`${trusted_proxy:-<the gateway WG IP>/32}\`"
+    echo "- Identity token public key (base64 SPKI DER): \`${identity_pubkey:-<not supplied>}\`"
     echo
     echo "| Hostname | Slot | Port | Access | Remote-User |"
     echo "|---|---|---|---|---|"

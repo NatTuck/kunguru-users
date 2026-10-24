@@ -20,6 +20,7 @@ client-supplied value:
 |---|---|
 | `Remote-User` | the signed-in username, or empty for anonymous |
 | `Remote-Groups` | comma-separated group names the user belongs to, or empty |
+| `X-Kunguru-Identity` | a short-lived EdDSA JWT asserting the same identity (see below), or absent |
 
 Rules:
 
@@ -36,6 +37,42 @@ Rules:
 - Apps must trust these headers **only** from the gateway's WireGuard IP (the
   same trusted-proxy contract as today). Bind the address the gateway reaches,
   and compare the TCP peer.
+
+### Signed identity token (recommended)
+
+`X-Kunguru-Identity` is a compact JWT (`alg: EdDSA`, `kid`) minted per request
+by `/internal/auth` and forwarded by the gateway. It is the **unforgeable** form
+of the same identity: unlike `Remote-User`, another local process cannot
+produce a valid one.
+
+```json
+{
+  "iss": "https://users.<base>",
+  "aud": "<the exact hostname the request was for>",
+  "sub": "<username>",
+  "grp": ["<group>", "..."],
+  "iat": 1700000000,
+  "exp": 1700000060,
+  "jti": "..."
+}
+```
+
+Verification rules:
+
+- verify the signature with the instance public key
+  (`GET https://users.<base>/api/identity-key` returns `publicKeyPem` and
+  `publicKeyDer`; the base64 DER is also provisioned into the `kunguru-sites`
+  skill as `KUNGURU_IDENTITY_PUBKEY_DER`);
+- require `aud` to equal your own hostname (tokens are audience-bound, so a
+  token captured by another app cannot be replayed against yours);
+- require `iss` to be the auth host and `exp` to be in the future (allow a
+  small clock skew);
+- **no token = anonymous.** Never use claims from an unverified token.
+- It expires in 60 seconds and is minted per request; there is no revocation
+  list. Treat it as an assertion about *this* request.
+
+The headers remain for compatibility and for apps that only do the peer check;
+apps that can verify the token should prefer it.
 
 ---
 
@@ -200,6 +237,10 @@ app.get("/private", (req, res) => {
   site's `require_auth` gate. Source lives at `~/sites/<label>`; the served
   docroot is `~/www/<label>`. `scripts/nginx/ensure-user-static.sh` renders the
   host listener and fixes directory permissions/ACLs.
+- **Signed identity (P3)**: `/internal/auth` mints the token; nginx forwards it
+  as `X-Kunguru-Identity`; the public key is served at `/api/identity-key` and
+  provisioned into the `kunguru-sites` skill. This is additive — apps that
+  ignore the token behave exactly as before.
 - **Deployment cutover (not done)**: this branch is not deployed. On a live
   instance the hand-managed legacy vhosts (`ops`, `ops-dev`, `gitbot`,
   `tongue-tie-dev`, the `tasks.*` `/api/` locations, the static `docs` vhost)

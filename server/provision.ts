@@ -45,6 +45,7 @@ import {
   setVirtualKeyActive,
   XMPP_DOMAIN,
 } from "./bifrost";
+import { getIdentitySigner } from "./identity";
 import { runRemote } from "./transport/run";
 import { reconcileSites } from "./nginx";
 
@@ -253,6 +254,8 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         env.KUNGURU_USER_ID = String(user.id);
         if (BASE_DOMAIN) env.KUNGURU_BASE_DOMAIN = BASE_DOMAIN;
         env.KUNGURU_GATEWAY_WG_IP = GATEWAY_WG_IP;
+        // Public verification key for X-Kunguru-Identity (not a secret).
+        env.KUNGURU_IDENTITY_PUBKEY_DER = getIdentitySigner().publicKeyDer;
         const coLocated = s.host.ssh_target === "localhost";
         env.KUNGURU_BIND_ADDR = coLocated ? "127.0.0.1" : s.host.ssh_target;
         env.KUNGURU_TRUSTED_PROXY = coLocated

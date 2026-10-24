@@ -1,8 +1,9 @@
 # Deployment topologies
 
 Status: **gateway + user servers is the reference config; one host is supported
-and functional (P1 done), and the auth socket is in place (P2).** Remaining:
-signed identity (P3), per-account isolation (P4). This doc records the topology model, the
+and functional (P1), the auth socket is in place (P2), and identity is signed
+(P3).** Remaining: the WebUI's per-turn identity (upstream), per-account
+isolation (P4), and per-account resource limits. This doc records the topology model, the
 single-host requirements, and the constraints current work must respect.
 
 Related: `DESIGN.md` (problem statement), `expanded-design.md` (trust model),
@@ -114,7 +115,7 @@ Options:
 | | What | Cost |
 |---|---|---|
 | T1 | Cooperative-only one host: document that accounts on a one-host instance must trust each other | none; contradicts the stated isolation boundary unless made explicit |
-| T2 | Auth socket + signed identity: the socket half is **done** (P2); an Ed25519 per-request token with `aud` = host (P3) would kill impersonation for apps that verify (the WebUI needs upstream support) | contained + medium |
+| T2 | Auth socket + signed identity: **done** (P2 + P3). `/internal/auth` is nginx-only, and a per-request Ed25519 token (`aud` = host) lets apps verify identity instead of trusting a peer address. The third-party WebUI cannot verify it yet (upstream). | contained + medium |
 | T3 | Per-account network namespaces/containers: true parity | large, out of scope |
 
 Recommendation: **T1 + the auth socket now** (documented, and the socket is a
@@ -153,15 +154,23 @@ Done: optional `gatewayWgIp` (required only when a host is not local),
 
 Done in P2: `/internal/auth` on a root-created unix socket
 (`runtime.authSocket`, tmpfiles.d; nginx only), so a local tenant can neither
-reach nor squat the auth authority. Still open: per-account resource limits
-(app-slot units exist, no limits yet) and signed identity (P3).
+reach nor squat the auth authority.
+
+Done in P3: `/internal/auth` also mints a 60-second EdDSA JWT (`sub`, `grp`,
+`aud` = the requested host, `iss`, `exp`), nginx forwards it as
+`X-Kunguru-Identity`, and the public key is served at `/api/identity-key` and
+provisioned into the skill. Apps that verify it are safe even when co-located
+with other tenants; the WebUI cannot verify it (upstream).
+
+Still open: per-account resource limits (app-slot units exist, no limits yet)
+and the WebUI's per-turn identity.
 
 ## 6. Phases
 
 - **P1 — functional one host** (done): config, transport, bootstrap, host
   pruning, templates, docs.
 - **P2 — auth socket** (done, both configs).
-- **P3 — signed identity** with the groups work.
+- **P3 — signed identity** (done).
 - **P4 — per-account isolation** (deferred).
 
 ## 7. Touchpoints
@@ -174,6 +183,8 @@ reach nor squat the auth authority. Still open: per-account resource limits
 - `scripts/nginx/ensure-user-sites.sh`, `ensure-user-static.sh` (already)
 - `deploy/instances/`, `notes/initial-setup.md`, `notes/deploy.md`
 - `notes/auth-protocol.md` — topology caveat
+- `server/identity.ts` — the signing key, token minting, and verification helper
+- `GET /api/identity-key`, `X-Kunguru-Identity` in the gateway vhost
 
 ## 8. Verification (P1)
 
@@ -189,9 +200,10 @@ Fresh single-host VM/container, with no SSH keys and no WireGuard:
 
 ## 9. Decisions
 
-1. **Trust posture — open.** The auth socket (P2) is done; the remaining choice
-   is signed identity (P3) vs documented cooperative-only (T1) vs per-account
-   isolation (T3).
+1. **Trust posture — mostly resolved.** The auth socket (P2) and signed
+   identity (P3) are done for apps that verify; the WebUI remains header/IP
+   based until upstream forwards/validates the token, and true network isolation
+   (T3) is still deferred.
 2. **Local transport — resolved:** a `localhost` host runs locally, no
    ssh-to-self.
 3. **WireGuard-capable path — resolved:** kept; not required when every host is

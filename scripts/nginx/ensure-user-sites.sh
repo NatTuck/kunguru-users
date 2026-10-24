@@ -225,6 +225,7 @@ proxy_body = """    location / {
         auth_request /__auth;
         auth_request_set $auth_user $upstream_http_x_auth_user;
         auth_request_set $auth_groups $upstream_http_x_auth_groups;
+        auth_request_set $kunguru_identity $upstream_http_x_auth_jwt;
         if ($kunguru_upstream = "") { return 404; }
         proxy_pass http://$kunguru_upstream;
         proxy_set_header Host $host;
@@ -232,6 +233,7 @@ proxy_body = """    location / {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header Remote-User $auth_user;
         proxy_set_header Remote-Groups $auth_groups;
+        proxy_set_header X-Kunguru-Identity $kunguru_identity;
         proxy_set_header Cookie $kunguru_cookie;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $kunguru_connection;

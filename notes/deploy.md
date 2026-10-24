@@ -232,6 +232,9 @@ pnpm sites-reconcile              # or: mise exec -- pnpm sites-reconcile
 ```
 
 Database lives in `<checkout>/data/` (gitignored) and is preserved across pulls.
+The identity signing key is `data/identity-key.pem` (0600, generated on first
+use) — back it up with the database, or clients that pinned its public key must
+re-pin the new one.
 
 ### Cutover to the two-port model + static sites (one-time)
 

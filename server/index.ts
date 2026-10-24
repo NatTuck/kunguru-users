@@ -20,6 +20,7 @@ import { config } from "./config";
 import { hostSeeds } from "./inventory";
 import { resolveSession } from "./auth";
 import { resolveHost, type AccountSlot } from "./sites";
+import { getIdentitySigner } from "./identity";
 import { api } from "./routes";
 
 const app = express();
@@ -153,9 +154,19 @@ function handleInternalAuth(req: Request, res: Response): void {
     return;
   }
 
+  const groups = listGroupNamesForUser(db, ctx.user.id);
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Auth-User", ctx.user.username);
-  res.setHeader("X-Auth-Groups", listGroupNamesForUser(db, ctx.user.id).join(","));
+  res.setHeader("X-Auth-Groups", groups.join(","));
+  // The unforgeable form of the same identity: a per-request, audience-bound,
+  // short-lived token. nginx forwards it as X-Kunguru-Identity.
+  const aud = (originalHost ?? "").split(":")[0].trim().toLowerCase();
+  if (aud) {
+    res.setHeader(
+      "X-Auth-Jwt",
+      getIdentitySigner().sign({ aud, sub: ctx.user.username, grp: groups }),
+    );
+  }
   res.status(200).end();
 }
 
