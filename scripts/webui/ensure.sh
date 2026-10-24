@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # webui/ensure.sh  (run as root on the user's host over `sudo bash -s`)
 #
-# Converges a per-tenant Hermes WebUI (github.com/nesquena/hermes-webui) for
+# Converges a per-tenant Hermes WebUI (pinned to our fork of
+# nesquena/hermes-webui; see notes/webui-identity.md) for
 # USERNAME:
 #   * clone/update the WebUI into ~/.local/apps/hermes-webui
 #   * a user systemd unit running server.py on WEBUI_PORT, bound to WEBUI_HOST
@@ -38,6 +39,10 @@ home="$(getent passwd "$USERNAME" | cut -d: -f6)"
 uid="$(id -u "$USERNAME")"
 agent_dir="${home}/.hermes/hermes-agent"
 repo_dir="${home}/.local/apps/hermes-webui"
+# The WebUI source. Pinned to our fork/branch until the trusted-user-identity
+# patch is upstream (nesquena/hermes-webui#8522); see notes/webui-identity.md.
+webui_repo="${WEBUI_REPO:-https://github.com/NatTuck/hermes-webui.git}"
+webui_ref="${WEBUI_REF:-kunguru/trusted-user-identity}"
 unit="${home}/.config/systemd/user/hermes-webui.service"
 
 # hermes_python: the interpreter that carries the Hermes agent's dependencies.
@@ -118,14 +123,17 @@ fi
 
 # --- clone or update the WebUI checkout ---
 if [[ ! -d "${repo_dir}/.git" ]]; then
-  echo "[changed] cloning hermes-webui for ${USERNAME}"
+  echo "[changed] cloning hermes-webui for ${USERNAME} (${webui_ref})"
   install -d -o "$USERNAME" "${home}/.local/apps"
-  run_as_user "git clone --depth 1 https://github.com/nesquena/hermes-webui.git '${repo_dir}'"
+  run_as_user "git clone --depth 1 --branch '${webui_ref}' '${webui_repo}' '${repo_dir}'"
 else
-  # Update in place. Shallow clones can't fast-forward when upstream rewrites
-  # history, so fetch the branch tip and hard-reset.
-  run_as_user "git -C '${repo_dir}' fetch --depth 1 origin master >/dev/null 2>&1 && git -C '${repo_dir}' reset --hard FETCH_HEAD >/dev/null 2>&1 || true"
+  # Update in place. Point an existing checkout (possibly cloned from upstream
+  # before the fork existed) at the fork/ref, then hard-reset to its tip:
+  # shallow clones can't fast-forward when history is rewritten.
+  run_as_user "git -C '${repo_dir}' remote set-url origin '${webui_repo}' >/dev/null 2>&1 || true; git -C '${repo_dir}' fetch --depth 1 origin '${webui_ref}' >/dev/null 2>&1 && git -C '${repo_dir}' reset --hard FETCH_HEAD >/dev/null 2>&1 || true"
 fi
+webui_commit="$(run_as_user "git -C '${repo_dir}' rev-parse --short HEAD" 2>/dev/null || true)"
+[[ -n "$webui_commit" ]] && echo "[ok] hermes-webui at ${webui_commit} (${webui_ref})"
 if [[ ! -f "${repo_dir}/server.py" ]]; then
   echo "error: hermes-webui server.py missing at ${repo_dir}" >&2
   exit 1

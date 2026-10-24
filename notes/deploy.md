@@ -275,7 +275,11 @@ session cookie is now `<base>`-wide, so do these in order:
 ## Upgrading tenant agents (Hermes / XMPP plugin / WebUI)
 
 `scripts/hermes/ensure.sh` converges each tenant's Hermes install, and
-`scripts/webui/ensure.sh` converges the WebUI. A plain `ensure` keeps the XMPP
+`scripts/webui/ensure.sh` converges the WebUI. The WebUI checkout is pinned to
+the `NatTuck/hermes-webui` fork's `kunguru/trusted-user-identity` branch (the
+per-turn identity patch; see `notes/webui-identity.md`) until upstream PR
+#8522 merges — both this step and the agent-update step reset to that ref via
+`WEBUI_REPO`/`WEBUI_REF`. A plain `ensure` keeps the XMPP
 plugin and the WebUI current (git fetch + hard-reset, since they're shallow
 clones) and installs the optional OMEMO stack (`slixmpp-omemo`/`omemo`), but it
 does **not** touch the Hermes agent version.

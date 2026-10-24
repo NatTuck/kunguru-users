@@ -54,6 +54,15 @@ gateway_wg_ip="${KUNGURU_GATEWAY_WG_IP:-}"
 bind_addr="${KUNGURU_BIND_ADDR:-}"
 trusted_proxy="${KUNGURU_TRUSTED_PROXY:-}"
 identity_pubkey="${KUNGURU_IDENTITY_PUBKEY_DER:-}"
+# Account kind (user | group): groups get the shared-session identity plugin.
+account_kind="${KUNGURU_ACCOUNT_KIND:-user}"
+# WebUI source/ref (our fork until the trusted-user-identity patch is upstream).
+webui_repo="${WEBUI_REPO:-https://github.com/NatTuck/hermes-webui.git}"
+webui_ref="${WEBUI_REF:-kunguru/trusted-user-identity}"
+case "$account_kind" in
+  user|group) ;;
+  *) echo "error: invalid KUNGURU_ACCOUNT_KIND '$account_kind' (user|group)" >&2; exit 1 ;;
+esac
 
 # run_as_user CMD...: run as USERNAME with a clean but functional env, the
 # per-user systemd manager socket (XDG_RUNTIME_DIR) so systemctl --user works,
@@ -196,7 +205,7 @@ if [[ "${HERMES_UPDATE:-0}" == "1" || "$action" == "update" ]]; then
   webui_dir="${home}/.local/apps/hermes-webui"
   if [[ -d "${webui_dir}/.git" ]]; then
     echo "[changed] updating hermes-webui for ${USERNAME}"
-    if run_as_user "git -C '${webui_dir}' fetch --depth 1 origin master >/dev/null 2>&1 && git -C '${webui_dir}' reset --hard FETCH_HEAD >/dev/null 2>&1"; then
+    if run_as_user "git -C '${webui_dir}' remote set-url origin '${webui_repo}' >/dev/null 2>&1 || true; git -C '${webui_dir}' fetch --depth 1 origin '${webui_ref}' >/dev/null 2>&1 && git -C '${webui_dir}' reset --hard FETCH_HEAD >/dev/null 2>&1"; then
       webui_py="$(hermes_python || true)"
       webui_uv="$(hermes_uv || true)"
       if [[ -n "$webui_py" && -n "$webui_uv" ]]; then
@@ -337,10 +346,79 @@ if [[ -n "$plugin_py" ]]; then
   fi
 fi
 
+# --- group identity plugin (shared group WebUI) ---
+# A group WebUI serves several members. The WebUI passes the signed-in member
+# as the agent's user_id; this plugin announces the speaker on the first turn
+# and when the speaker changes -- never on every turn (a sentence per turn is
+# pure token waste). Groups only: a user account has a single speaker.
+group_identity_dir="${home}/.hermes/plugins/kunguru-group-identity"
+if [[ "$account_kind" == "group" ]]; then
+  install -d -m 0755 -o "$USERNAME" -g "$(id -gn "$USERNAME")" "$group_identity_dir"
+  tmp_plugin="$(mktemp)"
+  cat >"$tmp_plugin" <<'YAML'
+name: kunguru-group-identity
+version: "0.1.0"
+description: "Attribute each WebUI turn to the signed-in member of a shared group account; announces only on the first turn and when the speaker changes."
+author: "kunguru-users"
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+YAML
+  install -m 0644 -o "$USERNAME" -g "$(id -gn "$USERNAME")" "$tmp_plugin" "$group_identity_dir/plugin.yaml"
+  cat >"$tmp_plugin" <<'PY'
+"""Attribute WebUI turns to the signed-in member of a shared group account.
+
+The WebUI passes the trusted-auth user as the agent's user_id; the agent
+exposes it to pre_llm_call as sender_id. Announcing the speaker on every turn
+is wasteful, so this keeps the last announced speaker per session and injects
+context only on the first turn and when the speaker changes. The context rides
+the current user message's API copy (not the system prompt, and not the
+persisted transcript).
+"""
+import threading
+
+_lock = threading.Lock()
+_last_sender = {}
+_pending = {}
+
+_FIRST = "[shared group session; current speaker: {}]"
+_CHANGED = "[speaker changed: {}]"
+
+
+def _on_pre_llm_call(session_id=None, sender_id=None, platform=None, **_):
+    if platform != "webui" or not sender_id:
+        return None
+    sid = str(session_id or "")
+    sender = str(sender_id)
+    with _lock:
+        previous = _last_sender.get(sid)
+        if previous == sender:
+            return None
+        _pending[sid] = sender
+    return {"context": (_FIRST if previous is None else _CHANGED).format(sender)}
+
+
+def _on_post_llm_call(session_id=None, **_):
+    sid = str(session_id or "")
+    with _lock:
+        sender = _pending.pop(sid, None)
+        if sender:
+            _last_sender[sid] = sender
+
+
+def register(ctx):
+    ctx.register_hook("pre_llm_call", _on_pre_llm_call)
+    ctx.register_hook("post_llm_call", _on_post_llm_call)
+PY
+  install -m 0644 -o "$USERNAME" -g "$(id -gn "$USERNAME")" "$tmp_plugin" "$group_identity_dir/__init__.py"
+  rm -f "$tmp_plugin"
+  echo "[ok] kunguru-group-identity installed for ${USERNAME}"
+fi
+
 # Merge (never replace) so plugins the tenant enabled (e.g. homeassistant) are
 # preserved while hermes-xmpp-plugin is (re)asserted.
 plugins_now="$(run_as_user 'hermes config get plugins.enabled --json 2>/dev/null' || echo '[]')"
-plugins_merged="$(PLUGINS_NOW="$plugins_now" python3 - <<'PY'
+plugins_merged="$(PLUGINS_NOW="$plugins_now" ACCOUNT_KIND="$account_kind" python3 - <<'PY'
 import json, os
 raw = os.environ.get("PLUGINS_NOW") or "[]"
 cur = None
@@ -367,6 +445,12 @@ for p in cur:
         out.append(p)
 if "hermes-xmpp-plugin" not in seen:
     out.append("hermes-xmpp-plugin")
+if os.environ.get("ACCOUNT_KIND") == "group":
+    if "kunguru-group-identity" not in seen:
+        out.append("kunguru-group-identity")
+else:
+    # A user account has a single speaker; the plugin is not installed.
+    out = [p for p in out if p != "kunguru-group-identity"]
 print(json.dumps(out))
 PY
 )"

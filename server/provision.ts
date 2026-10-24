@@ -168,6 +168,9 @@ interface RunJobOpts {
   update?: boolean;
   // Optional extra env exported to every step (e.g. HERMES_ACTION=stop).
   action?: string;
+  // Account kind (user | group). A group's hermes step installs the
+  // shared-session identity hook plugin; a user's does not.
+  accountKind?: "user" | "group";
   // Group agents: the JIDs the agent answers, the JID for proactive messages
   // (normally the group owner), the member usernames for SOUL.md, and the
   // WebUI profile map pinning sessions to the root profile.
@@ -252,6 +255,8 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         // slots + WebUI (12000/13000/11000 + id; see server/sites.ts) and the
         // bind/trusted-proxy addresses.
         env.KUNGURU_USER_ID = String(user.id);
+        // Groups install the shared-session identity hook plugin; users do not.
+        env.KUNGURU_ACCOUNT_KIND = opts.accountKind ?? "user";
         if (BASE_DOMAIN) env.KUNGURU_BASE_DOMAIN = BASE_DOMAIN;
         env.KUNGURU_GATEWAY_WG_IP = GATEWAY_WG_IP;
         // Public verification key for X-Kunguru-Identity (not a secret).
@@ -671,6 +676,7 @@ async function runGroupAgent(
       jobHostId: host.id,
       jobId,
       steps,
+      accountKind: "group",
       model: account.hermes_model ?? undefined,
       llm: { apiKey: vk.value },
       agent: {
