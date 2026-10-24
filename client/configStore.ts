@@ -3,7 +3,9 @@ import { get } from "./api";
 
 export interface AppConfig {
   baseDomain: string;
+  /** The login app's own host (`users.<base>`). */
   privateDomain: string;
+  authHost?: string;
   xmppDomain: string;
 }
 
@@ -12,8 +14,9 @@ interface ConfigState {
   load: () => Promise<void>;
 }
 
-// Domain names used to build per-user tool URLs (agent WebUI host, XMPP domain).
-// Loaded once at app start; empty values (dev / unconfigured) disable the links.
+// Domain names used to build per-account tool URLs (app, app-dev, WebUI, static
+// sites) and the XMPP domain. Loaded once at app start; empty values (dev /
+// unconfigured) disable the links.
 export const useConfigStore = create<ConfigState>((set) => ({
   config: null,
 
@@ -22,25 +25,37 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const data = await get<AppConfig>("/api/config");
       set({ config: data });
     } catch {
-      set({ config: { baseDomain: "", privateDomain: "", xmppDomain: "" } });
+      set({
+        config: { baseDomain: "", privateDomain: "", authHost: "", xmppDomain: "" },
+      });
     }
   },
 }));
 
-/** Agent WebUI URL for a user, or null when the base domain is unconfigured. */
+// Account host URLs. An account (a user, or a group) gets two app slots plus a
+// managed WebUI on the base domain; a static site is its own label there.
+// `baseDomain` empty (dev / unconfigured) disables the links.
+
+/** Managed Hermes WebUI for an account: `<account>-agent.<base>`. */
 export function agentUrl(baseDomain: string, username: string): string | null {
   if (!baseDomain) return null;
-  return `https://${username}-agent.users.${baseDomain}/`;
+  return `https://${username}-agent.${baseDomain}/`;
 }
 
-/** Public personal-app URL for a user, or null when the base domain is unset. */
-export function publicSiteUrl(baseDomain: string, username: string): string | null {
+/** Production app slot for an account: `<account>.<base>`. */
+export function appUrl(baseDomain: string, username: string): string | null {
   if (!baseDomain) return null;
   return `https://${username}.${baseDomain}/`;
 }
 
-/** Private personal-app URL (session-gated), or null when unconfigured. */
-export function privateAppUrl(privateDomain: string, username: string): string | null {
-  if (!privateDomain) return null;
-  return `https://${username}.${privateDomain}/`;
+/** Dev app slot for an account: `<account>-dev.<base>`. */
+export function appDevUrl(baseDomain: string, username: string): string | null {
+  if (!baseDomain) return null;
+  return `https://${username}-dev.${baseDomain}/`;
+}
+
+/** A static site owned by an account: `<label>.<base>`. */
+export function staticSiteUrl(baseDomain: string, label: string): string | null {
+  if (!baseDomain) return null;
+  return `https://${label}.${baseDomain}/`;
 }

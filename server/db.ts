@@ -23,7 +23,10 @@ export interface User {
   role: Role;
   kind: "user" | "group";
   owner_user_id: number | null;
+  // Per-slot access policy: whether the gateway requires a signed-in principal
+  // for the account's app / app-dev host. The WebUI slot is always required.
   require_auth: number;
+  require_auth_dev: number;
   enabled: number;
   created_at: string;
 }
@@ -99,6 +102,7 @@ export const SCHEMA = `
     kind TEXT NOT NULL DEFAULT 'user' CHECK (kind IN ('user', 'group')),
     owner_user_id INTEGER REFERENCES users(id),
     require_auth INTEGER NOT NULL DEFAULT 0,
+    require_auth_dev INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -111,6 +115,18 @@ export const SCHEMA = `
     PRIMARY KEY (group_id, user_id)
   );
   CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
+
+  CREATE TABLE IF NOT EXISTS static_sites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_kind TEXT NOT NULL CHECK (owner_kind IN ('user', 'group')),
+    owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label TEXT NOT NULL UNIQUE,
+    source_root TEXT NOT NULL,
+    served_root TEXT NOT NULL,
+    require_auth INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_static_sites_owner ON static_sites(owner_id);
 
   CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
@@ -166,17 +182,6 @@ export const SCHEMA = `
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (user_id, host_id)
   );
-
-  CREATE TABLE IF NOT EXISTS aliases (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    label TEXT NOT NULL UNIQUE,
-    kind TEXT NOT NULL DEFAULT 'proxy' CHECK (kind IN ('proxy', 'static')),
-    service TEXT CHECK (service IN ('private-app', 'public-site', 'hermes-webui')),
-    root TEXT,
-    access TEXT NOT NULL DEFAULT 'public' CHECK (access IN ('public', 'private')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
 `;
 
 export function openDb(): Database.Database {
@@ -221,6 +226,9 @@ function migrate(db: Database.Database): void {
   if (!ucols.some((c) => c.name === "require_auth")) {
     db.exec("ALTER TABLE users ADD COLUMN require_auth INTEGER NOT NULL DEFAULT 0");
   }
+  if (!ucols.some((c) => c.name === "require_auth_dev")) {
+    db.exec("ALTER TABLE users ADD COLUMN require_auth_dev INTEGER NOT NULL DEFAULT 0");
+  }
   const acols = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
   if (!acols.some((c) => c.name === "bifrost_vk_id")) {
     db.exec("ALTER TABLE accounts ADD COLUMN bifrost_vk_id TEXT");
@@ -237,6 +245,58 @@ function migrate(db: Database.Database): void {
   if (!acols.some((c) => c.name === "venv_kind")) {
     db.exec("ALTER TABLE accounts ADD COLUMN venv_kind TEXT");
   }
+  migrateAliases(db);
+}
+
+// Aliases are retired (the two-port account model + static sites replace them).
+// A static alias becomes a static site for the same owner; a proxy alias needs
+// an account or group with the same name, which only an operator can create, so
+// it is dropped with a warning. The table is removed either way.
+function migrateAliases(db: Database.Database): void {
+  const exists = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'aliases'")
+    .get();
+  if (!exists) return;
+  const rows = db
+    .prepare("SELECT * FROM aliases ORDER BY label ASC")
+    .all() as {
+    user_id: number;
+    label: string;
+    kind: string;
+    root: string | null;
+    access: string;
+  }[];
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO static_sites
+       (owner_kind, owner_id, label, source_root, served_root, require_auth)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  for (const a of rows) {
+    const owner = getUserById(db, a.user_id);
+    if (a.kind === "static" && owner) {
+      const home = `/home/${owner.username}`;
+      insert.run(
+        owner.kind,
+        owner.id,
+        a.label,
+        `${home}/sites/${a.label}`,
+        `${home}/www/${a.label}`,
+        a.access === "private" ? 1 : 0,
+      );
+      console.warn(
+        `migrated static alias '${a.label}' to a static site for '${owner.username}' ` +
+          `(served root ${home}/www/${a.label}; previous docroot ${a.root ?? "unset"})`,
+      );
+    } else if (a.kind === "proxy") {
+      console.warn(
+        `dropped proxy alias '${a.label}': aliases are retired; create an account ` +
+          `or group named '${a.label}' to keep that hostname`,
+      );
+    } else {
+      console.warn(`dropped static alias '${a.label}': owner account is missing`);
+    }
+  }
+  db.exec("DROP TABLE aliases");
 }
 
 let sharedDb: Database.Database | undefined;
@@ -378,31 +438,45 @@ export function listUsersWithAccounts(db: Database.Database): AccountJoinRow[] {
        FROM users u
        LEFT JOIN accounts a ON a.user_id = u.id
        LEFT JOIN hosts h ON h.id = a.host_id
+       WHERE u.kind = 'user'
        ORDER BY u.id ASC`,
     )
     .all() as AccountJoinRow[];
 }
 
-export interface SiteUserRow {
+export interface SiteAccountRow {
   id: number;
   username: string;
+  kind: OwnerKind;
+  require_auth: number;
+  require_auth_dev: number;
   ssh_target: string;
 }
 
-// Enabled users with an enabled host account: the set that gets per-user site
-// routes (Hermes WebUI, private app, public site). Disabled users are omitted,
-// so their reverse proxies are dropped on the next reconcile.
-export function listSiteUsers(db: Database.Database): SiteUserRow[] {
+// Enabled accounts (users and groups) on an enabled host: the set that gets the
+// two app slots + the WebUI route. Disabled accounts are omitted, so their
+// reverse proxies are dropped on the next reconcile.
+export function listSiteUsers(db: Database.Database): SiteAccountRow[] {
   return db
     .prepare(
-      `SELECT u.id AS id, u.username AS username, h.ssh_target AS ssh_target
+      `SELECT u.id AS id, u.username AS username, u.kind AS kind,
+              u.require_auth AS require_auth, u.require_auth_dev AS require_auth_dev,
+              h.ssh_target AS ssh_target
        FROM users u
        JOIN accounts a ON a.user_id = u.id
        JOIN hosts h ON h.id = a.host_id
        WHERE u.enabled = 1 AND h.enabled = 1
        ORDER BY u.id ASC`,
     )
-    .all() as SiteUserRow[];
+    .all() as SiteAccountRow[];
+}
+
+// Minimal account row for operations that only need to reach a host (agent
+// update, WebUI restart).
+export interface SiteUserRow {
+  id: number;
+  username: string;
+  ssh_target: string;
 }
 
 // Enabled users on an enabled host whose account is active: the set that
@@ -529,7 +603,7 @@ export function getSessionUser(
        WHERE s.token_hash = ?`,
     )
     .get(tokenHash) as
-    | { token_hash: string; expires_at: number; id: number; username: string; password_hash: string; role: Role; kind: "user" | "group"; owner_user_id: number | null; require_auth: number; enabled: number; created_at: string }
+    | { token_hash: string; expires_at: number; id: number; username: string; password_hash: string; role: Role; kind: "user" | "group"; owner_user_id: number | null; require_auth: number; require_auth_dev: number; enabled: number; created_at: string }
     | undefined;
   if (!row) return undefined;
   const { token_hash, expires_at, ...u } = row;
@@ -721,64 +795,132 @@ export function getAccountByUserHost(
     .get(userId, hostId) as Account | undefined;
 }
 
-// --- Aliases (admin-managed extra hostnames for a user's services) ---
+// --- Static sites (owner-scoped: a user or a group) ---
+//
+// A static site is a label served as `<label>.<base>` from the owner's
+// `~/www/<label>` by the nginx on the owner's host. The source/build project
+// lives beside it in `~/sites/<label>`; both paths are derived by
+// server/sites.ts `sitePaths()` and stored here so a future move stays a data
+// change. Files are never touched by the app beyond ensuring the directories.
 
-export type AliasKind = "proxy" | "static";
-export type AliasAccess = "public" | "private";
-export type AliasService = "private-app" | "public-site" | "hermes-webui";
+export type OwnerKind = "user" | "group";
 
-export interface Alias {
+export interface StaticSite {
   id: number;
-  user_id: number;
+  owner_kind: OwnerKind;
+  owner_id: number;
   label: string;
-  kind: AliasKind;
-  service: AliasService | null;
-  root: string | null;
-  access: AliasAccess;
+  source_root: string;
+  served_root: string;
+  require_auth: number;
   created_at: string;
 }
 
-export function listAliases(db: Database.Database): Alias[] {
-  return db.prepare("SELECT * FROM aliases ORDER BY label ASC").all() as Alias[];
-}
-
-export function listAliasesForUser(
-  db: Database.Database,
-  userId: number,
-): Alias[] {
+export function listStaticSites(db: Database.Database): StaticSite[] {
   return db
-    .prepare("SELECT * FROM aliases WHERE user_id = ? ORDER BY label ASC")
-    .all(userId) as Alias[];
+    .prepare("SELECT * FROM static_sites ORDER BY label ASC")
+    .all() as StaticSite[];
 }
 
-export function getAliasByLabel(
+export function listStaticSitesForOwner(
+  db: Database.Database,
+  ownerId: number,
+): StaticSite[] {
+  return db
+    .prepare("SELECT * FROM static_sites WHERE owner_id = ? ORDER BY label ASC")
+    .all(ownerId) as StaticSite[];
+}
+
+export function getStaticSiteByLabel(
   db: Database.Database,
   label: string,
-): Alias | undefined {
+): StaticSite | undefined {
   return db
-    .prepare("SELECT * FROM aliases WHERE label = ?")
-    .get(label) as Alias | undefined;
+    .prepare("SELECT * FROM static_sites WHERE label = ?")
+    .get(label) as StaticSite | undefined;
 }
 
-export function createAlias(
+export function getStaticSiteById(
   db: Database.Database,
-  a: Omit<Alias, "id" | "created_at">,
-): Alias {
+  id: number,
+): StaticSite | undefined {
+  return db.prepare("SELECT * FROM static_sites WHERE id = ?").get(id) as
+    | StaticSite
+    | undefined;
+}
+
+export function countStaticSitesForOwner(
+  db: Database.Database,
+  ownerId: number,
+): number {
+  return (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM static_sites WHERE owner_id = ?")
+      .get(ownerId) as { n: number }
+  ).n;
+}
+
+export function createStaticSite(
+  db: Database.Database,
+  site: Omit<StaticSite, "id" | "created_at">,
+): StaticSite {
   const info = db
     .prepare(
-      `INSERT INTO aliases (user_id, label, kind, service, root, access)
+      `INSERT INTO static_sites
+         (owner_kind, owner_id, label, source_root, served_root, require_auth)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(a.user_id, a.label, a.kind, a.service, a.root, a.access);
-  return {
-    id: Number(info.lastInsertRowid),
-    created_at: new Date().toISOString(),
-    ...a,
-  };
+    .run(
+      site.owner_kind,
+      site.owner_id,
+      site.label,
+      site.source_root,
+      site.served_root,
+      site.require_auth,
+    );
+  return { id: Number(info.lastInsertRowid), created_at: new Date().toISOString(), ...site };
 }
 
-export function deleteAlias(db: Database.Database, id: number): void {
-  db.prepare("DELETE FROM aliases WHERE id = ?").run(id);
+export function setStaticSiteRequireAuth(
+  db: Database.Database,
+  id: number,
+  requireAuth: boolean,
+): boolean {
+  const info = db
+    .prepare("UPDATE static_sites SET require_auth = ? WHERE id = ?")
+    .run(requireAuth ? 1 : 0, id);
+  return info.changes > 0;
+}
+
+// Removes the route only; the owner's files (`~/sites`, `~/www`) are retained.
+export function deleteStaticSite(db: Database.Database, id: number): void {
+  db.prepare("DELETE FROM static_sites WHERE id = ?").run(id);
+}
+
+// Static sites whose owner is an enabled account on an enabled host: the set
+// that gets a gateway route. `ssh_target` is the host the gateway forwards to
+// (the owner's host, where the static nginx serves the docroot).
+export interface StaticSiteHostRow extends StaticSite {
+  owner_name: string;
+  owner_enabled: number;
+  ssh_target: string;
+}
+
+export function listStaticSiteHosts(
+  db: Database.Database,
+): StaticSiteHostRow[] {
+  return db
+    .prepare(
+      `SELECT s.*, u.username AS owner_name, u.enabled AS owner_enabled,
+              h.ssh_target AS ssh_target
+         FROM static_sites s
+         JOIN users u ON u.id = s.owner_id
+         JOIN accounts a ON a.user_id = u.id
+         JOIN hosts h ON h.id = a.host_id
+        WHERE u.enabled = 1 AND h.enabled = 1
+        ORDER BY s.label ASC`,
+    )
+    .all() as StaticSiteHostRow[];
 }
 
 export function getAccountForUser(

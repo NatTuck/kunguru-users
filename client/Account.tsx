@@ -4,12 +4,8 @@ import { Alert, Button, Card, Input, Label, ListBox, Select, Spinner } from "@he
 import { Link } from "react-router-dom";
 import { useCurrentUser } from "./guards";
 import { useAuthStore } from "./authStore";
-import {
-  agentUrl,
-  privateAppUrl,
-  publicSiteUrl,
-  useConfigStore,
-} from "./configStore";
+import { agentUrl, appDevUrl, appUrl, useConfigStore } from "./configStore";
+import StaticSitesPanel from "./StaticSitesPanel";
 import { useSitesStore } from "./sitesStore";
 import { useModelStore } from "./modelStore";
 import { StatusChip } from "./ui";
@@ -28,12 +24,11 @@ export default function Account() {
   if (!user) return null;
 
   const baseDomain = config?.baseDomain ?? "";
-  const privateDomain = config?.privateDomain ?? "";
   const agent = agentUrl(baseDomain, user.username);
-  const publicApp = publicSiteUrl(baseDomain, user.username);
-  const privateApp = privateAppUrl(privateDomain, user.username);
+  const app = appUrl(baseDomain, user.username);
+  const appDev = appDevUrl(baseDomain, user.username);
 
-  const siteStatus = (slot: "public" | "private"): SiteCardStatus => {
+  const siteStatus = (slot: "app" | "appDev"): SiteCardStatus => {
     if (!sites) return sitesError ? "down" : "loading";
     if (!sites.provisioned) return "unavailable";
     return sites[slot].up ? "up" : "down";
@@ -54,26 +49,36 @@ export default function Account() {
           to="/xmpp"
         />
         <SiteCard
-          title="Public personal app"
+          title="Your app"
           description={
-            publicApp
-              ? `Your own public site at ${user.username}.${baseDomain}.`
-              : "Your own public site."
+            app
+              ? `Your production app, at ${user.username}.${baseDomain}.`
+              : "Your production app."
           }
-          href={publicApp}
-          status={siteStatus("public")}
+          href={app}
+          status={siteStatus("app")}
         />
         <SiteCard
-          title="Private personal app"
+          title="Your dev app"
           description={
-            privateApp
-              ? `Only you can see it, at ${user.username}.${privateDomain}.`
-              : "A private app only you can see."
+            appDev
+              ? `Your development app, at ${user.username}-dev.${baseDomain}.`
+              : "Your development app."
           }
-          href={privateApp}
-          status={siteStatus("private")}
+          href={appDev}
+          status={siteStatus("appDev")}
         />
       </div>
+
+      <h2 className="mt-10 mb-4 text-2xl font-semibold tracking-tight">Static sites</h2>
+      <Card className="p-6">
+        <p className="mb-4 text-sm text-neutral-500">
+          Publish files at your own <span className="font-mono">&lt;label&gt;.{baseDomain}</span>{" "}
+          address. Build the output into <span className="font-mono">~/www/&lt;label&gt;</span>;
+          the source project lives in <span className="font-mono">~/sites/&lt;label&gt;</span>.
+        </p>
+        <StaticSitesPanel />
+      </Card>
 
       <h2 className="mt-10 mb-4 text-2xl font-semibold tracking-tight">Agent model</h2>
       <ModelCard />

@@ -31,10 +31,12 @@ export interface SiteStatus {
   up: boolean;
 }
 
+/** Liveness of the signed-in user's app slots and managed WebUI. */
 export interface AccountSites {
   provisioned: boolean;
-  public: SiteStatus;
-  private: SiteStatus;
+  app: SiteStatus;
+  appDev: SiteStatus;
+  webui: SiteStatus;
 }
 
 export interface AdminUser extends User {
@@ -143,17 +145,16 @@ export interface JobDetail {
   steps: JobStepInfo[];
 }
 
-export type AliasKind = "proxy" | "static";
-export type AliasAccess = "public" | "private";
-export type AliasService = "private-app" | "public-site" | "hermes-webui";
-
-export interface Alias {
+/** A static site: `<label>.<base>` served from the owner's `~/www/<label>`. */
+export interface StaticSite {
   id: number;
-  user_id: number;
+  owner_kind: "user" | "group";
+  owner_id: number;
+  owner_name: string;
   label: string;
-  kind: AliasKind;
-  service: AliasService | null;
-  root: string | null;
-  access: AliasAccess;
+  hostname: string;
+  source_root: string;
+  served_root: string;
+  require_auth: number;
   created_at: string;
 }

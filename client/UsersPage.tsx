@@ -17,10 +17,10 @@ import type { Key } from "@heroui/react";
 import { useAuthStore } from "./authStore";
 import { useHostsStore } from "./hostsStore";
 import { useUsersStore } from "./usersStore";
-import { del, get, post } from "./api";
+import { get, post } from "./api";
+import StaticSitesPanel from "./StaticSitesPanel";
 import type {
   AdminUser,
-  Alias,
   FleetUpdateStatus,
   Host,
   JobDetail,
@@ -71,7 +71,7 @@ export default function UsersPage() {
   const [provisionFor, setProvisionFor] = useState<AdminUser | null>(null);
   const [provisionHost, setProvisionHost] = useState<string | null>(null);
   const [jobOpen, setJobOpen] = useState<number | null>(null);
-  const [aliasesFor, setAliasesFor] = useState<AdminUser | null>(null);
+  const [sitesFor, setSitesFor] = useState<AdminUser | null>(null);
   const [messageFor, setMessageFor] = useState<AdminUser | null>(null);
   const [modelFor, setModelFor] = useState<AdminUser | null>(null);
   const [confirmRefresh, setConfirmRefresh] = useState(false);
@@ -315,7 +315,7 @@ export default function UsersPage() {
                         setProvisionHost(u.account ? String(u.account.hostId) : firstHost != null ? String(firstHost) : null);
                       }}
                       onUpdate={() => void update(u.id)}
-                      onAliases={() => setAliasesFor(u)}
+                      onSites={() => setSitesFor(u)}
                       onMessage={() => setMessageFor(u)}
                       onModel={() => setModelFor(u)}
                     />
@@ -352,8 +352,8 @@ export default function UsersPage() {
       {jobOpen != null && (
         <JobLogModal jobId={jobOpen} onClose={() => setJobOpen(null)} />
       )}
-      {aliasesFor && (
-        <AliasesModal user={aliasesFor} onClose={() => setAliasesFor(null)} />
+      {sitesFor && (
+        <StaticSitesModal user={sitesFor} onClose={() => setSitesFor(null)} />
       )}
       {messageFor && (
         <MessageModal user={messageFor} onClose={() => setMessageFor(null)} />
@@ -526,7 +526,7 @@ function UserRow({
   onReset,
   onProvision,
   onUpdate,
-  onAliases,
+  onSites,
   onMessage,
   onModel,
 }: {
@@ -546,7 +546,7 @@ function UserRow({
   onReset: () => void;
   onProvision: () => void;
   onUpdate: () => void;
-  onAliases: () => void;
+  onSites: () => void;
   onMessage: () => void;
   onModel: () => void;
 }) {
@@ -630,8 +630,8 @@ function UserRow({
                 Reset password
               </Button>
             )}
-            <Button size="sm" variant="outline" isDisabled={busy} onPress={onAliases}>
-              Aliases
+            <Button size="sm" variant="outline" isDisabled={busy} onPress={onSites}>
+              Static sites
             </Button>
             {canMessage && (
               <Button size="sm" variant="outline" isDisabled={busy} onPress={onMessage}>
@@ -991,73 +991,19 @@ function JobLogModal({ jobId, onClose }: { jobId: number; onClose: () => void })
   );
 }
 
-function AliasesModal({
+function StaticSitesModal({
   user: u,
   onClose,
 }: {
   user: AdminUser;
   onClose: () => void;
 }) {
-  const [aliases, setAliases] = useState<Alias[] | null>(null);
-  const [label, setLabel] = useState("");
-  const [kind, setKind] = useState<string>("proxy");
-  const [service, setService] = useState<string>("public-site");
-  const [root, setRoot] = useState("");
-  const [access, setAccess] = useState<string>("public");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const load = async () => {
-    try {
-      const d = await get<{ aliases: Alias[] }>(`/api/users/${u.id}/aliases`);
-      setAliases(d.aliases);
-    } catch {
-      setAliases([]);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [u.id]);
-
-  const add = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const body: Record<string, unknown> = { label, kind, access };
-      if (kind === "proxy") body.service = service;
-      else body.root = root;
-      await post(`/api/users/${u.id}/aliases`, body);
-      setLabel("");
-      setRoot("");
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "failed to add alias");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (id: number) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await del(`/api/aliases/${id}`);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "failed to remove alias");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <ModalShell
       open
       onClose={onClose}
-      title={`Site aliases — ${u.username}`}
-      width="sm:max-w-[560px]"
+      title={`Static sites — ${u.username}`}
+      width="sm:max-w-[640px]"
       footer={
         <div className="flex justify-end">
           <Button variant="tertiary" onPress={onClose}>
@@ -1066,152 +1012,7 @@ function AliasesModal({
         </div>
       }
     >
-      <div className="space-y-5">
-        {error && (
-          <Alert status="danger">
-            <Alert.Content>
-              <Alert.Description>{error}</Alert.Description>
-            </Alert.Content>
-          </Alert>
-        )}
-
-        <div className="space-y-2">
-          {aliases == null ? (
-            <Spinner size="sm" />
-          ) : aliases.length === 0 ? (
-            <p className="text-sm text-neutral-500">No aliases yet.</p>
-          ) : (
-            <ul className="divide-y divide-neutral-100 rounded-lg border border-neutral-200">
-              {aliases.map((a) => (
-                <li key={a.id} className="flex items-center justify-between gap-3 px-3 py-2">
-                  <div className="min-w-0">
-                    <Mono>{a.label}</Mono>
-                    <span className="ml-2 text-xs text-neutral-500">
-                      {a.kind === "static"
-                        ? `static → ${a.root}`
-                        : `proxy → ${a.service}`}
-                      {" · "}
-                      {a.access}
-                    </span>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    isDisabled={busy}
-                    onPress={() => void remove(a.id)}
-                  >
-                    Remove
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="space-y-3 border-t border-neutral-100 pt-4">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="alias-label">Label</Label>
-            <Input
-              id="alias-label"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder="ops"
-            />
-          </div>
-
-          <div className="text-sm font-medium">Kind</div>
-          <RadioGroup value={kind} onChange={(v) => setKind(v ?? "proxy")} className="gap-2">
-            <Radio value="proxy">
-              <Radio.Content>
-                <Radio.Control>
-                  <Radio.Indicator />
-                </Radio.Control>
-                Proxy to a service port
-              </Radio.Content>
-            </Radio>
-            <Radio value="static">
-              <Radio.Content>
-                <Radio.Control>
-                  <Radio.Indicator />
-                </Radio.Control>
-                Static files (docroot)
-              </Radio.Content>
-            </Radio>
-          </RadioGroup>
-
-          {kind === "proxy" ? (
-            <>
-              <div className="text-sm font-medium">Service</div>
-              <RadioGroup
-                value={service}
-                onChange={(v) => setService(v ?? "public-site")}
-                className="gap-2"
-              >
-                <Radio value="public-site">
-                  <Radio.Content>
-                    <Radio.Control>
-                      <Radio.Indicator />
-                    </Radio.Control>
-                    Public site (12000+id)
-                  </Radio.Content>
-                </Radio>
-                <Radio value="private-app">
-                  <Radio.Content>
-                    <Radio.Control>
-                      <Radio.Indicator />
-                    </Radio.Control>
-                    Private app (13000+id)
-                  </Radio.Content>
-                </Radio>
-                <Radio value="hermes-webui">
-                  <Radio.Content>
-                    <Radio.Control>
-                      <Radio.Indicator />
-                    </Radio.Control>
-                    Hermes WebUI (11000+id)
-                  </Radio.Content>
-                </Radio>
-              </RadioGroup>
-            </>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="alias-root">Docroot</Label>
-              <Input
-                id="alias-root"
-                value={root}
-                onChange={(e) => setRoot(e.target.value)}
-                placeholder="/home/ndinda/sites/docs"
-              />
-            </div>
-          )}
-
-          <div className="text-sm font-medium">Access</div>
-          <RadioGroup value={access} onChange={(v) => setAccess(v ?? "public")} className="gap-2">
-            <Radio value="public">
-              <Radio.Content>
-                <Radio.Control>
-                  <Radio.Indicator />
-                </Radio.Control>
-                Public — &lt;label&gt;.base (app handles its own auth)
-              </Radio.Content>
-            </Radio>
-            <Radio value="private">
-              <Radio.Content>
-                <Radio.Control>
-                  <Radio.Indicator />
-                </Radio.Control>
-                Private — &lt;label&gt;.users.base (app session required)
-              </Radio.Content>
-            </Radio>
-          </RadioGroup>
-
-          <div className="flex justify-end">
-            <Button variant="primary" isDisabled={busy || !label} onPress={() => void add()}>
-              Add alias
-            </Button>
-          </div>
-        </div>
-      </div>
+      <StaticSitesPanel userId={u.id} />
     </ModalShell>
   );
 }

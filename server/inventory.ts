@@ -40,10 +40,17 @@ export const GATEWAY_WG_IP = config.gatewayWgIp;
 // ACME contact + certificate name for the shared per-user sites cert.
 export const SITES_CERT_NAME = config.sitesCert;
 
-// Deterministic per-user service ports (`base + users.id`).
+// Deterministic per-account service ports (`base + users.id`). An account is a
+// user or a group: every account gets the same two app slots plus a WebUI.
 export const PORT_HERMES_WEBUI = 11000;
-export const PORT_PUBLIC_SITE = 12000;
-export const PORT_PRIVATE_APP = 13000;
+export const PORT_APP = 12000;
+export const PORT_APP_DEV = 13000;
+
+// Static sites are not per-account: every static site owned by accounts on a
+// host is served by one nginx listener on that host. The gateway maps
+// `<label>.<base>` to `<owner-host>:<PORT_STATIC_SITES>`; the listener is bound
+// to the VPN address and only accepts the gateway.
+export const PORT_STATIC_SITES = 14000;
 
 export function hostSeeds(): HostSeed[] {
   return config.hosts.map((h) => ({

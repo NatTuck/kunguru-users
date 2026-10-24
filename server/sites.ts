@@ -1,56 +1,45 @@
 import {
   BASE_DOMAIN,
+  PORT_APP,
+  PORT_APP_DEV,
   PORT_HERMES_WEBUI,
-  PORT_PRIVATE_APP,
-  PORT_PUBLIC_SITE,
+  PORT_STATIC_SITES,
 } from "./inventory";
-import type { Alias, SiteUserRow } from "./db";
+import type { SiteAccountRow, StaticSiteHostRow } from "./db";
 
-// Generic per-user site model. Each user gets three slots, all served by the
-// gateway's nginx and reverse-proxied over the WireGuard LAN to the user's host:
+// Host model. Every account — a user, or a group (`users.kind = 'group'`) —
+// gets two app slots plus a managed WebUI, all served by the gateway's nginx
+// and reverse-proxied over the WireGuard LAN to the account's host:
 //
-//   hermes-webui  <user>-agent.users.<base>   11000+id  private (self only)
-//   private-app   <user>.users.<base>         13000+id  private (self only)
-//   public-site   <user>.<base>               12000+id  public
+//   app           <account>.<base>        12000 + id
+//   app-dev       <account>-dev.<base>    13000 + id
+//   hermes-webui  <account>-agent.<base>  11000 + id
 //
-// `private` slots live under the session-cookie domain (`users.<base>`), so the
-// nginx `auth_request` can see the app session; `public` slots do not.
+// Static sites are a separate owner-scoped resource (owner = user or group):
 //
-// Users are provisioned as DNS labels, so the hostnames are unambiguous:
-// usernames may not end in `-agent` (reserved for the WebUI slot, matching the
-// XMPP agent identity `<user>-agent`).
+//   static site   <label>.<base>          -> <owner-host>:14000
 //
-// Aliases add admin-managed extra hostnames for a user: a `proxy` alias points
-// at one of the user's service ports, a `static` alias serves files from a
-// root. Public aliases are `<label>.<base>`; private aliases are
-// `<label>.users.<base>` (so the auth subrequest can gate them).
+// The user-server nginx serves `<label>.<base>` from the owner's
+// `~/www/<label>` on that constant port; the gateway only forwards. There are
+// no aliases: an extra hostname needs an account name (a group).
+//
+// `-dev` and `-agent` are reserved suffixes, so `<label>-dev` always means
+// account `<label>`'s dev slot and never a static site or account name.
 
-export type SiteAccess = "private" | "public";
-export type SiteService = "hermes-webui" | "private-app" | "public-site";
-export type SiteKind = "proxy" | "static";
+export type SiteSlot = "app" | "app-dev" | "hermes-webui" | "static";
+export type AccountSlot = Exclude<SiteSlot, "static">;
 
-export interface SiteRoute {
-  userId: number;
-  username: string;
-  service: SiteService | "alias";
-  hostname: string;
-  port: number;
-  access: SiteAccess;
-  kind: SiteKind;
-  /** nginx upstream, `host:port` (proxy routes only). */
-  upstream: string;
-  /** docroot (static routes only). */
-  root: string;
-}
+export const APP_DEV_SUFFIX = "-dev";
+export const AGENT_SUFFIX = "-agent";
 
-export function servicePort(service: SiteService, userId: number): number {
-  switch (service) {
+export function servicePort(slot: AccountSlot, accountId: number): number {
+  switch (slot) {
     case "hermes-webui":
-      return PORT_HERMES_WEBUI + userId;
-    case "private-app":
-      return PORT_PRIVATE_APP + userId;
-    case "public-site":
-      return PORT_PUBLIC_SITE + userId;
+      return PORT_HERMES_WEBUI + accountId;
+    case "app":
+      return PORT_APP + accountId;
+    case "app-dev":
+      return PORT_APP_DEV + accountId;
   }
 }
 
@@ -61,143 +50,132 @@ export function upstreamHost(sshTarget: string): string {
   return t === "localhost" ? "127.0.0.1" : t;
 }
 
-// Suffix reserved for the tenant's Hermes WebUI slot, matching the XMPP agent
-// identity `<user>-agent`. Usernames and alias labels may not end in it (a
-// label `foo-agent` would otherwise shadow user `foo`'s WebUI host).
-const AGENT_SUFFIX = "-agent";
-
-export function hermesWebuiHost(username: string): string {
-  return `${username}${AGENT_SUFFIX}.users.${BASE_DOMAIN}`;
+export function appHost(name: string): string {
+  return `${name}.${BASE_DOMAIN}`;
 }
 
-export function privateAppHost(username: string): string {
-  return `${username}.users.${BASE_DOMAIN}`;
+export function appDevHost(name: string): string {
+  return `${name}${APP_DEV_SUFFIX}.${BASE_DOMAIN}`;
 }
 
-export function publicSiteHost(username: string): string {
-  return `${username}.${BASE_DOMAIN}`;
+export function webuiHost(name: string): string {
+  return `${name}${AGENT_SUFFIX}.${BASE_DOMAIN}`;
 }
 
-export function aliasHostname(label: string, access: SiteAccess): string {
-  return access === "public"
-    ? `${label}.${BASE_DOMAIN}`
-    : `${label}.users.${BASE_DOMAIN}`;
+export function staticSiteHost(label: string): string {
+  return `${label}.${BASE_DOMAIN}`;
 }
 
+/**
+ * Canonical filesystem layout for a static site, relative to the owner's home:
+ * the source/build project in `~/sites/<label>` and the served docroot in
+ * `~/www/<label>` (the built output the user-server nginx serves).
+ */
+export function sitePaths(ownerName: string, label: string): {
+  source: string;
+  served: string;
+} {
+  const home = `/home/${ownerName}`;
+  return { source: `${home}/sites/${label}`, served: `${home}/www/${label}` };
+}
+
+export interface SiteRoute {
+  hostname: string;
+  /** nginx upstream, `host:port`. */
+  upstream: string;
+  port: number;
+  slot: SiteSlot;
+  /** Account the host belongs to (the static-site owner for `static`). */
+  accountId: number | null;
+  accountName: string;
+}
+
+/**
+ * Every hostname the gateway routes, from the enabled accounts and static
+ * sites. Hostnames are unique by construction (labels are unique across
+ * accounts and static sites); if an account and a site somehow collide, the
+ * account wins.
+ */
 export function siteRoutes(
-  users: SiteUserRow[],
-  aliases: Alias[] = [],
+  accounts: SiteAccountRow[],
+  staticSites: StaticSiteHostRow[] = [],
 ): SiteRoute[] {
   if (!BASE_DOMAIN) return [];
-  const byId = new Map(users.map((u) => [u.id, u]));
   const routes: SiteRoute[] = [];
-  for (const u of users) {
-    const host = upstreamHost(u.ssh_target);
-    const slots: Array<[SiteService, string, SiteAccess]> = [
-      ["hermes-webui", hermesWebuiHost(u.username), "private"],
-      ["private-app", privateAppHost(u.username), "private"],
-      ["public-site", publicSiteHost(u.username), "public"],
+  for (const a of accounts) {
+    const host = upstreamHost(a.ssh_target);
+    const slots: Array<[AccountSlot, string]> = [
+      ["app", appHost(a.username)],
+      ["app-dev", appDevHost(a.username)],
+      ["hermes-webui", webuiHost(a.username)],
     ];
-    for (const [service, hostname, access] of slots) {
-      const port = servicePort(service, u.id);
+    for (const [slot, hostname] of slots) {
+      const port = servicePort(slot, a.id);
       routes.push({
-        userId: u.id,
-        username: u.username,
-        service,
         hostname,
-        port,
-        access,
-        kind: "proxy",
         upstream: `${host}:${port}`,
-        root: "",
+        port,
+        slot,
+        accountId: a.id,
+        accountName: a.username,
       });
     }
   }
-  for (const a of aliases) {
-    const owner = byId.get(a.user_id);
-    const hostname = aliasHostname(a.label, a.access);
-    if (a.kind === "static") {
-      // Static aliases serve a docroot on the gateway, so they don't need the
-      // owner to have an account/host.
-      routes.push({
-        userId: a.user_id,
-        username: owner?.username ?? "",
-        service: "alias",
-        hostname,
-        port: 0,
-        access: a.access,
-        kind: "static",
-        upstream: "",
-        root: a.root ?? "",
-      });
-      continue;
-    }
-    if (!owner) continue; // proxy alias for a disabled/absent user: skip
-    const host = upstreamHost(owner.ssh_target);
-    if (!a.service) continue; // proxy alias without a target service
-    const port = servicePort(a.service, a.user_id);
+  const seen = new Set(routes.map((r) => r.hostname));
+  for (const s of staticSites) {
+    const hostname = staticSiteHost(s.label);
+    if (seen.has(hostname)) continue;
+    seen.add(hostname);
     routes.push({
-      userId: a.user_id,
-      username: owner.username,
-      service: "alias",
       hostname,
-      port,
-      access: a.access,
-      kind: "proxy",
-      upstream: `${host}:${port}`,
-      root: "",
+      upstream: `${upstreamHost(s.ssh_target)}:${PORT_STATIC_SITES}`,
+      port: PORT_STATIC_SITES,
+      slot: "static",
+      accountId: s.owner_id,
+      accountName: s.owner_name,
     });
   }
   return routes;
 }
 
 /**
- * Resolve the owning username for a private host under `users.<base>`
- * (`<user>.users.<base>` or `<user>-agent.users.<base>`). Returns null for the
- * base domain, public hosts, deeper names, or when unconfigured. Private
- * *alias* labels are resolved separately (via the aliases table).
+ * What a gateway host means for authentication:
+ *
+ *   { kind: "account", slot, name }  a slot of an account (app / app-dev / WebUI)
+ *   { kind: "label", label }         a bare `<label>.<base>`: an account's app
+ *                                    or a static site, resolved against the DB
+ *
+ * Returns null for anything else: the base domain itself, deeper names
+ * (`<a>.<b>.<base>`), the auth host (`users.<base>`), and unconfigured
+ * deployments.
  */
-export function privateUsernameFromHost(host: string | undefined): string | null {
-  if (!host || !BASE_DOMAIN) return null;
-  const h = host.split(":")[0].trim().toLowerCase();
-  const suffix = `.users.${BASE_DOMAIN}`;
-  if (!h.endsWith(suffix)) return null;
-  let label = h.slice(0, -suffix.length);
-  if (!label || label.includes(".")) return null;
-  if (label.endsWith(AGENT_SUFFIX)) label = label.slice(0, -AGENT_SUFFIX.length);
-  return label || null;
-}
+export type HostMatch =
+  | { kind: "account"; slot: AccountSlot; name: string }
+  | { kind: "label"; label: string };
 
-/** Extract the bare label from a private host under `users.<base>`, or null. */
-export function privateLabelFromHost(host: string | undefined): string | null {
+export function resolveHost(host: string | undefined): HostMatch | null {
   if (!host || !BASE_DOMAIN) return null;
   const h = host.split(":")[0].trim().toLowerCase();
-  const suffix = `.users.${BASE_DOMAIN}`;
+  const suffix = `.${BASE_DOMAIN.toLowerCase()}`;
   if (!h.endsWith(suffix)) return null;
   const label = h.slice(0, -suffix.length);
-  if (!label || label.includes(".")) return null;
-  return label;
-}
-
-/**
- * Extract the single label from a public host `<label>.<base>`, or null. The
- * auth host itself (`users.<base>`) and deeper names (`<a>.<b>.<base>`) return
- * null; private hosts are handled by `privateLabelFromHost`.
- */
-export function publicLabelFromHost(host: string | undefined): string | null {
-  if (!host || !BASE_DOMAIN) return null;
-  const h = host.split(":")[0].trim().toLowerCase();
-  const suffix = `.${BASE_DOMAIN}`;
-  if (!h.endsWith(suffix)) return null;
-  const label = h.slice(0, -suffix.length);
+  // A single label only: no empty label, no deeper names.
   if (!label || label.includes(".")) return null;
   if (label === "users") return null; // the auth app host
-  return label;
+  if (label.endsWith(AGENT_SUFFIX)) {
+    const name = label.slice(0, -AGENT_SUFFIX.length);
+    return name ? { kind: "account", slot: "hermes-webui", name } : null;
+  }
+  if (label.endsWith(APP_DEV_SUFFIX)) {
+    const name = label.slice(0, -APP_DEV_SUFFIX.length);
+    return name ? { kind: "account", slot: "app-dev", name } : null;
+  }
+  return { kind: "label", label };
 }
 
-// Labels double as DNS labels (`<label>.<base>` / `<label>.users.<base>`), so
-// they must be valid labels, must not collide with the reserved `-agent`
-// suffix, and must not shadow infrastructure hostnames.
+// Labels double as DNS labels (`<label>.<base>`), so they must be valid labels,
+// must not end in a reserved suffix (`-dev`, `-agent`), and must not shadow
+// infrastructure hostnames.
 const RESERVED_LABELS = new Set([
   "chat",
   "groups",
@@ -217,18 +195,25 @@ const RESERVED_LABELS = new Set([
   "localhost",
 ]);
 
-const USERNAME_RE = /^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$/;
+const LABEL_RE = /^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$/;
 
+function isProvisionableLabel(value: unknown): value is string {
+  if (typeof value !== "string" || !LABEL_RE.test(value)) return false;
+  if (value.endsWith(AGENT_SUFFIX) || value.endsWith(APP_DEV_SUFFIX)) return false;
+  if (RESERVED_LABELS.has(value)) return false;
+  return true;
+}
+
+/** Account names (users and groups) share the label namespace. */
 export function isProvisionableUsername(value: unknown): value is string {
-  if (typeof value !== "string" || !USERNAME_RE.test(value)) return false;
-  if (value.endsWith(AGENT_SUFFIX)) return false;
-  if (RESERVED_LABELS.has(value)) return false;
-  return true;
+  return isProvisionableLabel(value);
 }
 
-export function isProvisionableAliasLabel(value: unknown): value is string {
-  if (typeof value !== "string" || !USERNAME_RE.test(value)) return false;
-  if (value.endsWith(AGENT_SUFFIX)) return false;
-  if (RESERVED_LABELS.has(value)) return false;
-  return true;
+/** Static-site labels share the same namespace and rules as account names. */
+export function isProvisionableSiteLabel(value: unknown): value is string {
+  return isProvisionableLabel(value);
 }
+
+/** Human-readable rule text for API validation errors. */
+export const LABEL_RULE =
+  "lowercase letters/digits/hyphens, starting with a letter, at most 32, not ending in '-dev' or '-agent', not reserved";

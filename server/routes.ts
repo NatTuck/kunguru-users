@@ -1,31 +1,32 @@
 import { Router, type Response } from "express";
 import {
   countAdmins,
-  createAlias,
+  countStaticSitesForOwner,
+  createStaticSite,
   createUser,
-  deleteAlias,
   deleteSessionsForUser,
+  deleteStaticSite,
   generatePassword,
   getAccountForUser,
-  getAliasByLabel,
   getDb,
   getHostById,
   getJob,
   getJobSteps,
+  getStaticSiteById,
+  getStaticSiteByLabel,
   getUserById,
   getUserByUsername,
-  listAliasesForUser,
   listHosts,
   listJobsForUser,
+  listStaticSitesForOwner,
   listUsersWithAccounts,
+  setStaticSiteRequireAuth,
   setUserEnabled,
   setUserRole,
   toAdminRows,
   updateUserPasswordHash,
-  type AliasAccess,
-  type AliasKind,
-  type AliasService,
   type Role,
+  type StaticSite,
 } from "./db";
 import {
   hashPassword,
@@ -48,9 +49,12 @@ import {
   type ProvisionResult,
 } from "./provision";
 import {
-  isProvisionableAliasLabel,
+  LABEL_RULE,
+  isProvisionableSiteLabel,
   isProvisionableUsername,
   servicePort,
+  sitePaths,
+  staticSiteHost,
   upstreamHost,
 } from "./sites";
 import { tcpUp } from "./probe";
@@ -66,9 +70,9 @@ import {
 
 export const api = Router();
 
-// Per-user site routes (Hermes WebUI / private app / public site) are derived
-// from DB state, so reconcile them after any change to the user set. Failures
-// are surfaced, never fatal to the user operation itself.
+// Account app routes and static-site routes are derived from DB state, so
+// reconcile them after any change to the account or site set. Failures are
+// surfaced, never fatal to the operation itself.
 async function reconcileSitesSafe(): Promise<{ ok: boolean; output: string }> {
   try {
     const r = await reconcileUserSites();
@@ -359,18 +363,21 @@ api.post("/auth/password", requireAuth, async (req, res) => {
 });
 
 // --- Public config ---
-// Domain names the SPA needs to build per-user tool URLs (the agent WebUI host
-// `<user>-agent.users.<base>` and the XMPP domain). Public: these are DNS names.
+// Domain names the SPA needs to build per-account tool URLs (`<account>.<base>`
+// app, `<account>-dev.<base>` app-dev, `<account>-agent.<base>` WebUI) and the
+// XMPP domain. `authHost` is the login app's own host (`users.<base>`). Public:
+// these are DNS names.
 api.get("/config", (_req, res) => {
   res.json({
     baseDomain: BASE_DOMAIN,
     privateDomain: PRIVATE_DOMAIN,
+    authHost: PRIVATE_DOMAIN,
     xmppDomain: XMPP_DOMAIN,
   });
 });
 
 // --- My personal apps (self) ---
-// Liveness of the signed-in user's public/private personal-app slots, for the
+// Liveness of the signed-in user's app slots (app, app-dev) and WebUI, for the
 // account page. TCP-only: it reports whether the tenant's own upstream is
 // listening on its slot port; the gateway route + TLS are managed separately by
 // reconcile. Short, bounded probes run concurrently.
@@ -383,18 +390,25 @@ api.get("/me/sites", requireAuth, async (_req, res) => {
   const db = getDb();
   const account = getAccountForUser(db, userId);
   if (!BASE_DOMAIN || !account || !account.host.enabled) {
-    res.json({ provisioned: false, public: { up: false }, private: { up: false } });
+    res.json({
+      provisioned: false,
+      app: { up: false },
+      appDev: { up: false },
+      webui: { up: false },
+    });
     return;
   }
   const host = upstreamHost(account.host.ssh_target);
-  const [publicUp, privateUp] = await Promise.all([
-    tcpUp(host, servicePort("public-site", userId)),
-    tcpUp(host, servicePort("private-app", userId)),
+  const [appUp, appDevUp, webuiUp] = await Promise.all([
+    tcpUp(host, servicePort("app", userId)),
+    tcpUp(host, servicePort("app-dev", userId)),
+    tcpUp(host, servicePort("hermes-webui", userId)),
   ]);
   res.json({
     provisioned: true,
-    public: { up: publicUp },
-    private: { up: privateUp },
+    app: { up: appUp },
+    appDev: { up: appDevUp },
+    webui: { up: webuiUp },
   });
 });
 
@@ -458,10 +472,7 @@ api.post("/users", requireAuth, requireAdmin, async (req, res) => {
     hostId?: unknown;
   };
   if (!isValidUsername(username)) {
-    res.status(400).json({
-      error:
-        "invalid username: lowercase letters/digits/hyphens, starting with a letter, not ending in '-agent', max 32 (must be a DNS label)",
-    });
+    res.status(400).json({ error: `invalid username: ${LABEL_RULE}` });
     return;
   }
   const targetRole: Role = isRole(role) ? role : "user";
@@ -969,117 +980,231 @@ api.get("/jobs/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ job, steps: getJobSteps(db, id) });
 });
 
-// --- Per-user site aliases (admin) ---
+// --- Static sites (owner-scoped) ---
+//
+// A static site is `<label>.<base>`, served from the owner's `~/www/<label>` by
+// the nginx on the owner's host (the gateway forwards to
+// `<owner-host>:14000`). The source/build project lives in `~/sites/<label>`.
+// Owners are users or groups; 5 sites per owner. Removing a site drops the
+// route only -- the owner's files are kept.
 
-const ALIAS_KINDS: AliasKind[] = ["proxy", "static"];
-const ALIAS_ACCESS: AliasAccess[] = ["public", "private"];
-const ALIAS_SERVICES: AliasService[] = [
-  "private-app",
-  "public-site",
-  "hermes-webui",
-];
+const STATIC_SITE_LIMIT = 5;
 
-function isAliasKind(v: unknown): v is AliasKind {
-  return typeof v === "string" && (ALIAS_KINDS as string[]).includes(v);
+interface StaticSiteView {
+  id: number;
+  owner_kind: "user" | "group";
+  owner_id: number;
+  owner_name: string;
+  label: string;
+  hostname: string;
+  source_root: string;
+  served_root: string;
+  require_auth: number;
+  created_at: string;
 }
-function isAliasAccess(v: unknown): v is AliasAccess {
-  return typeof v === "string" && (ALIAS_ACCESS as string[]).includes(v);
-}
-function isAliasService(v: unknown): v is AliasService {
-  return typeof v === "string" && (ALIAS_SERVICES as string[]).includes(v);
-}
 
-api.get("/users/:id/aliases", requireAuth, requireAdmin, (req, res) => {
-  const id = parseId(req.params.id);
-  if (id == null) {
-    res.status(400).json({ error: "invalid id" });
-    return;
-  }
-  res.json({ aliases: listAliasesForUser(getDb(), id) });
-});
-
-api.post("/users/:id/aliases", requireAuth, requireAdmin, async (req, res) => {
-  const id = parseId(req.params.id);
-  if (id == null) {
-    res.status(400).json({ error: "invalid id" });
-    return;
-  }
-  const { label, kind, service, root, access } = (req.body ?? {}) as {
-    label?: unknown;
-    kind?: unknown;
-    service?: unknown;
-    root?: unknown;
-    access?: unknown;
+function siteView(site: StaticSite, ownerName: string): StaticSiteView {
+  return {
+    ...site,
+    owner_name: ownerName,
+    hostname: BASE_DOMAIN ? staticSiteHost(site.label) : "",
   };
-  if (!isProvisionableAliasLabel(label)) {
-    res.status(400).json({
-      error:
-        "invalid label: lowercase letters/digits/hyphens, starting with a letter, not '-agent', not reserved",
-    });
+}
+
+interface SessionUser {
+  id: number;
+  username: string;
+  role: Role;
+}
+
+function currentUser(res: {
+  locals: { session?: { user: SessionUser } };
+}): SessionUser | undefined {
+  return res.locals.session?.user;
+}
+
+// Site labels share the account namespace, so a label may not collide with a
+// username or group name (or with another site's label).
+function siteLabelConflict(
+  db: ReturnType<typeof getDb>,
+  label: string,
+): string | null {
+  if (getUserByUsername(db, label)) return "label collides with an account name";
+  if (getStaticSiteByLabel(db, label)) return "label already exists";
+  return null;
+}
+
+async function createSiteFor(
+  res: Response,
+  owner: { id: number; username: string; kind: "user" | "group"; enabled: number },
+  body: { label?: unknown; requireAuth?: unknown },
+): Promise<void> {
+  const { label, requireAuth } = body;
+  if (!isProvisionableSiteLabel(label)) {
+    res.status(400).json({ error: `invalid label: ${LABEL_RULE}` });
+    return;
+  }
+  if (!owner.enabled) {
+    res.status(400).json({ error: "owner account is disabled; enable it first" });
     return;
   }
   const db = getDb();
-  if (!getUserById(db, id)) {
-    res.status(404).json({ error: "user not found" });
+  const conflict = siteLabelConflict(db, label);
+  if (conflict) {
+    res.status(409).json({ error: conflict });
     return;
   }
-  // A label must not shadow an existing username or another alias.
-  if (getUserByUsername(db, label)) {
-    res.status(409).json({ error: "label collides with a username" });
+  if (countStaticSitesForOwner(db, owner.id) >= STATIC_SITE_LIMIT) {
+    res.status(409).json({
+      error: `at most ${STATIC_SITE_LIMIT} static sites per owner`,
+    });
     return;
   }
-  if (getAliasByLabel(db, label)) {
-    res.status(409).json({ error: "alias label already exists" });
-    return;
-  }
-  const aliasKind: AliasKind = isAliasKind(kind) ? kind : "proxy";
-  const aliasAccess: AliasAccess = isAliasAccess(access) ? access : "public";
-  let aliasService: AliasService | null = null;
-  let aliasRoot: string | null = null;
-  if (aliasKind === "proxy") {
-    if (!isAliasService(service)) {
-      res.status(400).json({ error: "proxy alias needs a valid service" });
-      return;
-    }
-    aliasService = service;
-  } else {
-    if (typeof root !== "string" || !root.startsWith("/") || root.length > 512) {
-      res.status(400).json({ error: "static alias needs an absolute root path" });
-      return;
-    }
-    aliasRoot = root;
-  }
-  let alias;
+  const paths = sitePaths(owner.username, label);
+  let site: StaticSite;
   try {
-    alias = createAlias(db, {
-      user_id: id,
+    site = createStaticSite(db, {
+      owner_kind: owner.kind,
+      owner_id: owner.id,
       label,
-      kind: aliasKind,
-      service: aliasService,
-      root: aliasRoot,
-      access: aliasAccess,
+      source_root: paths.source,
+      served_root: paths.served,
+      require_auth: requireAuth === true ? 1 : 0,
     });
   } catch (err) {
     if (
       err instanceof Error &&
       (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
     ) {
-      res.status(409).json({ error: "alias label already exists" });
+      res.status(409).json({ error: "label already exists" });
       return;
     }
     throw err;
   }
   const sites = await reconcileSitesSafe();
-  res.status(201).json({ alias, sites });
-});
+  res.status(201).json({ site: siteView(site, owner.username), sites });
+}
 
-api.delete("/aliases/:id", requireAuth, requireAdmin, async (req, res) => {
+// A site may be managed by its owner or by an admin.
+function siteManageable(
+  site: StaticSite,
+  user: SessionUser | undefined,
+): boolean {
+  if (!user) return false;
+  return user.role === "admin" || site.owner_id === user.id;
+}
+
+// Admin: a specific account's static sites.
+api.get("/users/:id/static-sites", requireAuth, requireAdmin, (req, res) => {
   const id = parseId(req.params.id);
   if (id == null) {
     res.status(400).json({ error: "invalid id" });
     return;
   }
-  deleteAlias(getDb(), id);
+  const db = getDb();
+  const owner = getUserById(db, id);
+  if (!owner) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  res.json({
+    sites: listStaticSitesForOwner(db, id).map((s) => siteView(s, owner.username)),
+  });
+});
+
+api.post("/users/:id/static-sites", requireAuth, requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const db = getDb();
+  const owner = getUserById(db, id);
+  if (!owner) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  await createSiteFor(res, owner, (req.body ?? {}) as Record<string, unknown>);
+});
+
+// Self-service: the signed-in user's own static sites.
+api.get("/me/static-sites", requireAuth, (_req, res) => {
+  const user = currentUser(res);
+  if (!user) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  res.json({
+    sites: listStaticSitesForOwner(getDb(), user.id).map((s) =>
+      siteView(s, user.username),
+    ),
+    limit: STATIC_SITE_LIMIT,
+  });
+});
+
+api.post("/me/static-sites", requireAuth, async (req, res) => {
+  const user = currentUser(res);
+  if (!user) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const db = getDb();
+  const owner = getUserById(db, user.id);
+  if (!owner) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  await createSiteFor(res, owner, (req.body ?? {}) as Record<string, unknown>);
+});
+
+api.patch("/static-sites/:id", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const { requireAuth: required } = (req.body ?? {}) as { requireAuth?: unknown };
+  if (typeof required !== "boolean") {
+    res.status(400).json({ error: "requireAuth must be a boolean" });
+    return;
+  }
+  const db = getDb();
+  const site = getStaticSiteById(db, id);
+  if (!site) {
+    res.status(404).json({ error: "static site not found" });
+    return;
+  }
+  if (!siteManageable(site, currentUser(res))) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  setStaticSiteRequireAuth(db, id, required);
+  const owner = getUserById(db, site.owner_id);
+  const sites = await reconcileSitesSafe();
+  res.json({
+    site: siteView({ ...site, require_auth: required ? 1 : 0 }, owner?.username ?? ""),
+    sites,
+  });
+});
+
+api.delete("/static-sites/:id", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const db = getDb();
+  const site = getStaticSiteById(db, id);
+  if (!site) {
+    res.status(404).json({ error: "static site not found" });
+    return;
+  }
+  if (!siteManageable(site, currentUser(res))) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  // Route only: the owner's ~/sites and ~/www trees are retained.
+  deleteStaticSite(db, id);
   const sites = await reconcileSitesSafe();
   res.json({ ok: true, sites });
 });

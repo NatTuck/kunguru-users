@@ -1,9 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getDb, getHostByName, listAliases, listSiteUsers } from "./db";
+import { getDb, getHostByName, listSiteUsers, listStaticSiteHosts } from "./db";
 import {
   BASE_DOMAIN,
   GATEWAY_HOST_NAME,
+  PRIVATE_DOMAIN,
   SCRIPTS_DIR,
   SITES_CERT_NAME,
   SSH_USER,
@@ -19,9 +20,10 @@ export interface ReconcileResult {
 }
 
 /**
- * Reconcile the gateway's per-user reverse-proxy routes (Hermes WebUI, private
- * app, public site) from current DB state. Runs on the host that owns nginx.
- * Idempotent; safe after any user create/enable/disable/provision.
+ * Reconcile the gateway's nginx routes from current DB state: the two app slots
+ * and WebUI of every enabled account, plus every static site (forwarded to the
+ * owner's host). Runs on the host that owns nginx. Idempotent; safe after any
+ * user/account/site change.
  */
 export async function reconcileUserSites(): Promise<ReconcileResult> {
   if (!BASE_DOMAIN) {
@@ -37,7 +39,7 @@ export async function reconcileUserSites(): Promise<ReconcileResult> {
     throw new Error(`gateway host '${GATEWAY_HOST_NAME}' not configured`);
   }
 
-  const routes = siteRoutes(listSiteUsers(db), listAliases(db));
+  const routes = siteRoutes(listSiteUsers(db), listStaticSiteHosts(db));
   const script = await readFile(
     join(SCRIPTS_DIR, "nginx/ensure-user-sites.sh"),
     "utf8",
@@ -51,6 +53,9 @@ export async function reconcileUserSites(): Promise<ReconcileResult> {
       KUNGURU_ROUTES: JSON.stringify(routes),
       KUNGURU_SITES_CERT: SITES_CERT_NAME,
       KUNGURU_AUTH_TARGET: `127.0.0.1:${config.runtime.port}`,
+      // The login app's own host (`users.<base>`); require_auth hosts redirect
+      // there with `next=<original URL>`.
+      ...(PRIVATE_DOMAIN ? { KUNGURU_AUTH_HOST: PRIVATE_DOMAIN } : {}),
     },
     timeoutMs: 300_000,
   });
