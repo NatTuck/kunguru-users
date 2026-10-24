@@ -215,7 +215,9 @@ session cookie is now `<base>`-wide, so do these in order:
 5. Start the new build, then read `data/migration-warnings.log` (also printed to
    the service log) to confirm what the alias migration did.
 6. `pnpm sites-reconcile`; every enabled host should report `[ok]` (this also
-   installs nginx + acl on user servers the first time).
+   installs nginx + acl on user servers the first time). Then run **Repair** on
+   each existing account once so its app slots (directories + user units) are
+   installed.
 7. Verify (from the gateway):
    - `<account>.<base>`, `<account>-dev.<base>`, `<account>-agent.<base>`;
    - a public and a `require_auth` static site, signed out and in;
@@ -298,6 +300,12 @@ and ACLs are created.
 directories, then the gateway routes) from the DB; the app calls the same code
 after any account or site change. The gateway is rendered last and is told which
 hosts failed, so it never forwards to a listener that is not there.
+
+Provisioning installs each account's two app slots as **user units**
+(`app.service`, `app-dev.service`) that run `~/.../run` with the slot port and
+bind address; the app's UI shows their state and offers enable/disable/restart/
+logs. `HOST` is loopback when the account is on the gateway host and the host's
+VPN/LAN address otherwise.
 
 `scripts/hermes/ensure.sh` installs this contract into every tenant as the
 `kunguru-sites` skill under `~/.hermes/skills/kunguru-custom/`, embedding the

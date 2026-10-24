@@ -143,7 +143,7 @@ Any change on `feature/groups` (Phase 2b/3) must keep these true:
 | bootstrap always does WireGuard | a single-host mode that skips it (one `group.conf` host with role `hub`) |
 | `ensureHostSeed` never disables hosts removed from config | prune/disable config-absent hosts (explicit flag or CLI) |
 | no one-host template or runbook | `deploy/instances/single.example.json`, a single-host `group.conf` example, and an `initial-setup.md` variant |
-| capacity/availability | document; `MemoryMax` on app units in Phase 2b |
+| capacity/availability | document; app-slot units exist now but have no resource limits (follow-up) |
 
 ## 6. Phases
 

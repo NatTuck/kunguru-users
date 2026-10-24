@@ -18,6 +18,7 @@ import { useAuthStore } from "./authStore";
 import { useHostsStore } from "./hostsStore";
 import { useUsersStore } from "./usersStore";
 import { get, post } from "./api";
+import AppSlotsPanel from "./AppSlotsPanel";
 import StaticSitesPanel from "./StaticSitesPanel";
 import type {
   AdminUser,
@@ -72,6 +73,7 @@ export default function UsersPage() {
   const [provisionHost, setProvisionHost] = useState<string | null>(null);
   const [jobOpen, setJobOpen] = useState<number | null>(null);
   const [sitesFor, setSitesFor] = useState<AdminUser | null>(null);
+  const [appsFor, setAppsFor] = useState<AdminUser | null>(null);
   const [messageFor, setMessageFor] = useState<AdminUser | null>(null);
   const [modelFor, setModelFor] = useState<AdminUser | null>(null);
   const [confirmRefresh, setConfirmRefresh] = useState(false);
@@ -316,6 +318,7 @@ export default function UsersPage() {
                       }}
                       onUpdate={() => void update(u.id)}
                       onSites={() => setSitesFor(u)}
+                      onApps={() => setAppsFor(u)}
                       onMessage={() => setMessageFor(u)}
                       onModel={() => setModelFor(u)}
                     />
@@ -354,6 +357,9 @@ export default function UsersPage() {
       )}
       {sitesFor && (
         <StaticSitesModal user={sitesFor} onClose={() => setSitesFor(null)} />
+      )}
+      {appsFor && (
+        <AppSlotsModal user={appsFor} onClose={() => setAppsFor(null)} />
       )}
       {messageFor && (
         <MessageModal user={messageFor} onClose={() => setMessageFor(null)} />
@@ -527,6 +533,7 @@ function UserRow({
   onProvision,
   onUpdate,
   onSites,
+  onApps,
   onMessage,
   onModel,
 }: {
@@ -547,6 +554,7 @@ function UserRow({
   onProvision: () => void;
   onUpdate: () => void;
   onSites: () => void;
+  onApps: () => void;
   onMessage: () => void;
   onModel: () => void;
 }) {
@@ -630,6 +638,9 @@ function UserRow({
                 Reset password
               </Button>
             )}
+            <Button size="sm" variant="outline" isDisabled={busy} onPress={onApps}>
+              Apps
+            </Button>
             <Button size="sm" variant="outline" isDisabled={busy} onPress={onSites}>
               Static sites
             </Button>
@@ -987,6 +998,32 @@ function JobLogModal({ jobId, onClose }: { jobId: number; onClose: () => void })
           </div>
         ))}
       </div>
+    </ModalShell>
+  );
+}
+
+function AppSlotsModal({
+  user: u,
+  onClose,
+}: {
+  user: AdminUser;
+  onClose: () => void;
+}) {
+  return (
+    <ModalShell
+      open
+      onClose={onClose}
+      title={`Apps — ${u.username}`}
+      width="sm:max-w-[640px]"
+      footer={
+        <div className="flex justify-end">
+          <Button variant="tertiary" onPress={onClose}>
+            Close
+          </Button>
+        </div>
+      }
+    >
+      <AppSlotsPanel accountId={u.id} />
     </ModalShell>
   );
 }

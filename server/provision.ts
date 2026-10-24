@@ -27,6 +27,8 @@ import {
 import {
   BASE_DOMAIN,
   GATEWAY_WG_IP,
+  PORT_APP,
+  PORT_APP_DEV,
   PORT_HERMES_WEBUI,
   PRIVATE_DOMAIN,
   SCRIPTS_DIR,
@@ -77,6 +79,9 @@ interface StepRuntime {
 export const PROFILES: Record<string, ProfileStepDef[]> = {
   [STANDARD_ACCOUNT_PROFILE]: [
     { name: "linux-account", scriptRel: "account/ensure.sh", target: "user-host" },
+    // The two app slots (code dirs + user units) are per account, not per
+    // service: install them as soon as the Linux account exists.
+    { name: "app-slots", scriptRel: "account/ensure-apps.sh", target: "user-host" },
     { name: "snikket-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
     { name: "snikket-agent-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
@@ -187,6 +192,15 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         // The agent's XMPP identity is internal; always converge it to the
         // password Hermes is configured with in this run.
         env.SNIKKET_ACCOUNT_FORCE = "1";
+      }
+      if (s.def.name === "app-slots") {
+        // The account's app slots: deterministic ports, and the address the
+        // gateway reaches (loopback when co-located, else the host's VPN/LAN
+        // address). Host-agnostic: one-host and gateway+user-server both work.
+        const coLocated = s.host.ssh_target === "localhost";
+        env.KUNGURU_APP_PORT = String(PORT_APP + user.id);
+        env.KUNGURU_APP_DEV_PORT = String(PORT_APP_DEV + user.id);
+        env.KUNGURU_BIND_ADDR = coLocated ? "127.0.0.1" : s.host.ssh_target;
       }
       if (s.def.name === "hermes") {
         env.HERMES_LLM_BASE_URL = HERMES_LLM_BASE_URL;

@@ -15,6 +15,7 @@ import {
   getStaticSiteById,
   getStaticSiteByLabel,
   getUserById,
+  isGroupMember,
   getUserByUsername,
   listHosts,
   listJobsForUser,
@@ -25,8 +26,10 @@ import {
   setUserRole,
   toAdminRows,
   updateUserPasswordHash,
+  type Host,
   type Role,
   type StaticSite,
+  type User,
 } from "./db";
 import {
   hashPassword,
@@ -52,12 +55,17 @@ import {
   LABEL_RULE,
   isProvisionableSiteLabel,
   isProvisionableUsername,
-  servicePort,
   sitePaths,
   staticSiteHost,
-  upstreamHost,
 } from "./sites";
-import { tcpUp } from "./probe";
+import {
+  APP_SLOTS,
+  controlApp,
+  getAppLogs,
+  getAppStatus,
+  type AppAction,
+  type AppSlot,
+} from "./apps";
 import { reconcileSites } from "./nginx";
 import { refreshModelsAndRestartWebuis } from "./models";
 import { BASE_DOMAIN } from "./inventory";
@@ -371,42 +379,6 @@ api.get("/config", (_req, res) => {
   res.json({
     baseDomain: BASE_DOMAIN,
     xmppDomain: XMPP_DOMAIN,
-  });
-});
-
-// --- My personal apps (self) ---
-// Liveness of the signed-in user's app slots (app, app-dev) and WebUI, for the
-// account page. TCP-only: it reports whether the tenant's own upstream is
-// listening on its slot port; the gateway route + TLS are managed separately by
-// reconcile. Short, bounded probes run concurrently.
-api.get("/me/sites", requireAuth, async (_req, res) => {
-  const userId = currentUserId(res);
-  if (userId == null) {
-    res.status(401).json({ error: "unauthorized" });
-    return;
-  }
-  const db = getDb();
-  const account = getAccountForUser(db, userId);
-  if (!BASE_DOMAIN || !account || !account.host.enabled) {
-    res.json({
-      provisioned: false,
-      app: { up: false },
-      appDev: { up: false },
-      webui: { up: false },
-    });
-    return;
-  }
-  const host = upstreamHost(account.host.ssh_target);
-  const [appUp, appDevUp, webuiUp] = await Promise.all([
-    tcpUp(host, servicePort("app", userId)),
-    tcpUp(host, servicePort("app-dev", userId)),
-    tcpUp(host, servicePort("hermes-webui", userId)),
-  ]);
-  res.json({
-    provisioned: true,
-    app: { up: appUp },
-    appDev: { up: appDevUp },
-    webui: { up: webuiUp },
   });
 });
 
@@ -1220,4 +1192,156 @@ api.delete("/static-sites/:id", requireAuth, async (req, res) => {
   deleteStaticSite(db, id);
   const sites = await reconcileSitesSafe();
   res.json({ ok: true, sites });
+});
+
+// --- Account app slots (self, group members, admins) ---
+//
+// Every account has two app slots (`app`, `app-dev`) as user units installed by
+// provisioning (scripts/account/ensure-apps.sh). The app reads their state and
+// enables/disables/restarts them through the account's user manager, and serves
+// recent journal lines. The same routes work for a user and for a group
+// (members may manage their group's slots).
+
+function isAppSlot(value: unknown): value is AppSlot {
+  return typeof value === "string" && (APP_SLOTS as string[]).includes(value);
+}
+
+function isAppAction(value: unknown): value is AppAction {
+  return value === "enable" || value === "disable" || value === "restart";
+}
+
+interface AccountTarget {
+  account: User;
+  host: Host;
+}
+
+// Authorization: admins, the account itself, and any member of a group account.
+function accountTargetFor(
+  res: Response,
+  id: number,
+): { target: AccountTarget } | { status: number; error: string } {
+  const user = currentUser(res);
+  if (!user) return { status: 401, error: "unauthorized" };
+  const db = getDb();
+  const account = getUserById(db, id);
+  if (!account) return { status: 404, error: "account not found" };
+  const allowed =
+    user.role === "admin" ||
+    account.id === user.id ||
+    (account.kind === "group" && isGroupMember(db, account.id, user.id));
+  if (!allowed) return { status: 403, error: "forbidden" };
+  const hostAccount = getAccountForUser(db, account.id);
+  if (!hostAccount) {
+    return { status: 400, error: "account is not provisioned" };
+  }
+  return { target: { account, host: hostAccount.host } };
+}
+
+api.get("/accounts/:id/apps", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = accountTargetFor(res, id);
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const { account, host } = found.target;
+  try {
+    const status = await getAppStatus({
+      username: account.username,
+      ssh_target: host.ssh_target,
+    });
+    res.json({
+      account: { id: account.id, username: account.username, kind: account.kind },
+      ...status,
+    });
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "could not read app slots",
+    });
+  }
+});
+
+api.post("/accounts/:id/apps", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const { slot, action } = (req.body ?? {}) as { slot?: unknown; action?: unknown };
+  if (!isAppSlot(slot)) {
+    res.status(400).json({ error: "slot must be 'app' or 'app-dev'" });
+    return;
+  }
+  if (!isAppAction(action)) {
+    res.status(400).json({ error: "action must be enable, disable, or restart" });
+    return;
+  }
+  const found = accountTargetFor(res, id);
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const target = {
+    username: found.target.account.username,
+    ssh_target: found.target.host.ssh_target,
+  };
+  try {
+    const result = await controlApp(target, slot, action);
+    // Re-read the state so the caller can render it without a second request;
+    // a failed read must not hide the action's own result.
+    let status = null;
+    try {
+      status = await getAppStatus(target);
+    } catch {
+      status = null;
+    }
+    res.json({ ok: result.ok, output: result.output, ...(status ?? {}) });
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "app control failed",
+    });
+  }
+});
+
+api.get("/accounts/:id/apps/:slot/logs", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  if (!isAppSlot(req.params.slot)) {
+    res.status(400).json({ error: "slot must be 'app' or 'app-dev'" });
+    return;
+  }
+  const found = accountTargetFor(res, id);
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const rawLines = Array.isArray(req.query.lines)
+    ? req.query.lines[0]
+    : req.query.lines;
+  const lines =
+    typeof rawLines === "string" && /^[0-9]+$/.test(rawLines)
+      ? Math.min(2000, Math.max(1, Number(rawLines)))
+      : 200;
+  try {
+    const result = await getAppLogs(
+      {
+        username: found.target.account.username,
+        ssh_target: found.target.host.ssh_target,
+      },
+      req.params.slot,
+      lines,
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "could not read app logs",
+    });
+  }
 });

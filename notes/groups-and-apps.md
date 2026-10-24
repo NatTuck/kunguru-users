@@ -157,13 +157,25 @@ Linux account (user or group):
   `setfacl -R -m u:www-data:rX /home/<name>/www/<label>`).
 - member add/remove via `gpasswd`.
 
-App units (per account):
+App slots (per account):
 
-- `app.service` → `WorkingDirectory=%h/.local/apps/app`, `PORT=12000+id`,
-  `HOST=<bind>`; `app-dev.service` → `~/.local/apps/app-dev`, `PORT=13000+id`.
-- The app owns the units (needed for group accounts, which cannot
-  `systemctl --user` as the group user) and runs a convention start script
-  (`~/.local/apps/app/run`, `app-dev/run`). Restart + journald logs in the UI.
+- Provisioning installs two **user units**: `app.service` →
+  `WorkingDirectory=%h/.local/apps/app`, `PORT=12000+id`, `HOST=<bind>`;
+  `app-dev.service` → `~/.local/apps/app-dev`, `PORT=13000+id`. Both are
+  enabled at boot; `ConditionPathIsExecutable=%h/.local/apps/<slot>/run` keeps a
+  slot inactive (not failed) until the account provides the convention start
+  script.
+- The units are user units: the app drives them as root through the account's
+  user manager (`runuser` / `systemctl --user -M`), which works for user and
+  group accounts alike. Members of a group have no session as the group, so the
+  app's UI is their control surface.
+- The app's UI shows each slot's state (installed / enabled / active) and offers
+  enable, disable, restart, and recent journal logs. The unit files are
+  platform-owned (port, bind address, restart policy); the `run` script and code
+  are the account's.
+- `HOST` is loopback when the account is on the gateway host (one-host
+  deployments) and the host's VPN/LAN address otherwise — derived from the host
+  row, never hardcoded.
 
 Hermes (optional, per account):
 
@@ -235,7 +247,9 @@ Gateway:
 - `app.service`, `app-dev.service` as above; `hermes-webui.service` managed by
   `scripts/webui/ensure.sh`; `hermes-gateway.service`,
   `hermes-xmpp-watchdog.*`.
-- Restart/logs: `systemctl --user -M <account>@ restart app`,
+- Restart/logs are driven by the app (`scripts/account/app-control.sh` →
+  `runuser … systemctl --user …` / `journalctl --user`); the equivalent manual
+  commands are `systemctl --user -M <account>@ restart app` and
   `journalctl --user -M <account>@ -u app`.
 - Static sites have **no unit**; the user-server nginx serves them.
 
@@ -262,7 +276,10 @@ Gateway:
   provision status/log, restart/logs, repair, message (member picker).
 - **Static sites page**: my sites (owned), create ≤5 (label + source/served
   paths), `require_auth`, delete (route only; files retained), status.
-- **Account page**: app/app-dev/WebUI links; group apps; static sites.
+- **Account page**: the app-slot panel (state, enable/disable, restart, logs,
+  links) and static sites; group apps reuse the same panel.
+- **Admin**: the same app-slot panel per account (users now, groups in Phase 3);
+  group members get it through the group page.
 - App-slot `require_auth`/`require_auth_dev` are enforced by `/internal/auth`
   but have **no UI yet**; set the columns directly until the self-service
   toggle lands in Phase 3.
@@ -385,7 +402,11 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
   sites.
 - `server/routes.ts` — `/api/groups`, `/api/static-sites`, app/app-dev status,
   message; admin views; filter user list.
-- `server/provision.ts` — account branch, app units, static-site dirs/ACLs.
+- `server/provision.ts` — account branch, app-slot step, static-site dirs/ACLs.
+- `scripts/account/ensure-apps.sh` — app-slot dirs + user units.
+- `scripts/account/app-control.sh` — status / enable / disable / restart / logs.
+- `server/apps.ts` — transport + status parsing for the app slots.
+- `client/AppSlotsPanel.tsx` — the control surface.
 - `server/sites.ts` — app/app-dev/webui routes; static-site routes to the
   owner-host static port; drop alias routes.
 - `server/nginx.ts` — `reconcileUserSites` (gateway), `reconcileUserStaticSites`
@@ -406,6 +427,10 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
 
 - Two-port apps: `<account>` and `<account>-dev` resolve, optional/require_auth
   behavior correct, app units restart/log.
+- App slots: provisioning installs `app.service`/`app-dev.service` (enabled,
+  inactive until `run` is executable), the UI shows state and logs, enable /
+  disable / restart work for a user account and for a group account (as an
+  admin), and `HOST` is loopback on a one-host deployment.
 - Static sites: source `~/sites/<label>`, served `~/www/<label>`; user-server
   nginx serves 200; gateway forwards; `require_auth` gates; `www-data` can read;
   symlink escape blocked; 5/owner cap; a gateway-local site is served by the

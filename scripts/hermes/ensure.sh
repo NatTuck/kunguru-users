@@ -557,45 +557,36 @@ automatically.
 
 Your app should:
 
-- bind to the address in `references/local.md` (the VPN/LAN address the gateway
-  reaches), not just loopback;
+- bind to the address in `references/local.md` (the address the gateway reaches:
+  the host's VPN/LAN address, or `127.0.0.1` when your account is on the same
+  host as the gateway);
 - do **no** password login of its own;
 - use `Remote-User` / `Remote-Groups` for identity and authorization.
 
 ## Deploying your app
 
-1. Put production code in `~/.local/apps/app` and dev code in
-   `~/.local/apps/app-dev`.
-2. Run each on its slot port from `references/local.md`, bound to the bind
-   address.
-3. Open `https://<account>.<base>/` (production) or
-   `https://<account>-dev.<base>/` (dev).
+The platform installs two user units for your account:
 
-Example unit (production; mirror it for `app-dev` with the dev port):
+- `app.service` runs `~/.local/apps/app/run` with `PORT=<app port>` and
+  `HOST=<bind address>` (from `references/local.md`);
+- `app-dev.service` runs `~/.local/apps/app-dev/run` with the dev port.
 
-```
-# ~/.config/systemd/user/app.service
-[Unit]
-Description=<app>
-After=network-online.target
-Wants=network-online.target
+Put production code in `~/.local/apps/app` and dev code in
+`~/.local/apps/app-dev`, and provide an executable `run` script in each slot.
+It must start your server on `$HOST:$PORT` (read them from the environment).
+The slot stays **inactive** until `run` exists and is executable, then enable or
+restart it from the app's **Your apps** panel, which also shows the unit state
+and recent logs.
 
-[Service]
-WorkingDirectory=%h/.local/apps/app
-Environment=PORT=12000
-Environment=HOST=<bind address>
-ExecStart=%h/.local/bin/node server.js
-Restart=always
-RestartSec=3
+If the account is yours you can also use `systemctl --user status app` /
+`systemctl --user restart app`. Members of a group account use the app's panel:
+they have no login session as the group.
 
-[Install]
-WantedBy=default.target
-```
+Do **not** edit the unit files: the platform manages them (ports, bind address,
+restart policy).
 
-```sh
-systemctl --user daemon-reload
-systemctl --user enable --now app
-```
+Then open `https://<account>.<base>/` (production) or
+`https://<account>-dev.<base>/` (dev).
 
 ## Static sites
 

@@ -27,16 +27,24 @@ export interface AccountInfo {
   venvKind: string | null;
 }
 
-export interface SiteStatus {
-  up: boolean;
+/** An account's two app slots (user units installed by provisioning). */
+export type AppSlot = "app" | "app-dev";
+
+export interface AppSlotStatus {
+  slot: AppSlot;
+  unit: string;
+  load: string;
+  enabled: string;
+  active: string;
+  sub: string;
+  exitCode: number | null;
+  result: string;
+  installed: boolean;
 }
 
-/** Liveness of the signed-in user's app slots and managed WebUI. */
-export interface AccountSites {
-  provisioned: boolean;
-  app: SiteStatus;
-  appDev: SiteStatus;
-  webui: SiteStatus;
+export interface AppStatus {
+  manager: boolean;
+  slots: AppSlotStatus[];
 }
 
 export interface AdminUser extends User {

@@ -4,35 +4,20 @@ import { Alert, Button, Card, Input, Label, ListBox, Select, Spinner } from "@he
 import { Link } from "react-router-dom";
 import { useCurrentUser } from "./guards";
 import { useAuthStore } from "./authStore";
-import { agentUrl, appDevUrl, appUrl, useConfigStore } from "./configStore";
+import { agentUrl, useConfigStore } from "./configStore";
+import AppSlotsPanel from "./AppSlotsPanel";
 import StaticSitesPanel from "./StaticSitesPanel";
-import { useSitesStore } from "./sitesStore";
 import { useModelStore } from "./modelStore";
 import { StatusChip } from "./ui";
 
 export default function Account() {
   const user = useCurrentUser();
   const config = useConfigStore((s) => s.config);
-  const sites = useSitesStore((s) => s.sites);
-  const sitesError = useSitesStore((s) => s.error);
-  const loadSites = useSitesStore((s) => s.load);
-
-  useEffect(() => {
-    loadSites();
-  }, [loadSites]);
 
   if (!user) return null;
 
   const baseDomain = config?.baseDomain ?? "";
   const agent = agentUrl(baseDomain, user.username);
-  const app = appUrl(baseDomain, user.username);
-  const appDev = appDevUrl(baseDomain, user.username);
-
-  const siteStatus = (slot: "app" | "appDev"): SiteCardStatus => {
-    if (!sites) return sitesError ? "down" : "loading";
-    if (!sites.provisioned) return "unavailable";
-    return sites[slot].up ? "up" : "down";
-  };
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -48,27 +33,12 @@ export default function Account() {
           description="Chat with your agent from a phone or desktop XMPP app."
           to="/xmpp"
         />
-        <SiteCard
-          title="Your app"
-          description={
-            app
-              ? `Your production app, at ${user.username}.${baseDomain}.`
-              : "Your production app."
-          }
-          href={app}
-          status={siteStatus("app")}
-        />
-        <SiteCard
-          title="Your dev app"
-          description={
-            appDev
-              ? `Your development app, at ${user.username}-dev.${baseDomain}.`
-              : "Your development app."
-          }
-          href={appDev}
-          status={siteStatus("appDev")}
-        />
       </div>
+
+      <h2 className="mt-10 mb-4 text-2xl font-semibold tracking-tight">Your apps</h2>
+      <Card className="p-6">
+        <AppSlotsPanel accountId={user.id} />
+      </Card>
 
       <h2 className="mt-10 mb-4 text-2xl font-semibold tracking-tight">Static sites</h2>
       <Card className="p-6">
@@ -377,68 +347,4 @@ function ToolCard({
       </p>
     </div>
   );
-}
-
-type SiteCardStatus = "up" | "down" | "loading" | "unavailable";
-
-/** A Kunguru Tools card that reports whether a personal app is up and links to
- * it only when it is. */
-function SiteCard({
-  title,
-  description,
-  href,
-  status,
-}: {
-  title: string;
-  description: string;
-  href: string | null;
-  status: SiteCardStatus;
-}) {
-  if (status === "unavailable") {
-    return (
-      <div className="h-full rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-5">
-        <div className="font-semibold text-neutral-400">{title}</div>
-        <p className="mt-1 text-sm text-neutral-400">
-          Available once your account is provisioned.
-        </p>
-      </div>
-    );
-  }
-
-  const chip =
-    status === "up" ? (
-      <StatusChip label="Up" tone="success" />
-    ) : status === "down" ? (
-      <StatusChip label="Down" tone="danger" />
-    ) : (
-      <StatusChip label="Checking…" tone="neutral" />
-    );
-
-  const inner = (
-    <div
-      className={`h-full rounded-2xl border border-neutral-200 bg-white p-5 transition-colors ${
-        status === "up" ? "hover:border-neutral-300" : ""
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="font-semibold">{title}</div>
-        {chip}
-      </div>
-      <p className="mt-1 text-sm text-neutral-500">{description}</p>
-      {status === "down" && (
-        <p className="mt-2 text-xs text-neutral-400">
-          Not running yet — it will appear here once deployed.
-        </p>
-      )}
-    </div>
-  );
-
-  if (status === "up" && href) {
-    return (
-      <a href={href} target="_blank" rel="noreferrer" className="block">
-        {inner}
-      </a>
-    );
-  }
-  return <div className="block">{inner}</div>;
 }
