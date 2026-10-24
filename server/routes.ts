@@ -1692,6 +1692,16 @@ api.post("/groups/:id/disable", requireAuth, async (req, res) => {
   }
   const db = getDb();
   setUserEnabled(db, id, false);
+  // Cut the group's agent off the same way a user disable does: stop its
+  // gateway and deactivate its LLM key. (Routes drop via the reconcile below.)
+  try {
+    await deactivateUserAccess({
+      user: found.access.group,
+      createdBy: currentUser(res)?.id ?? null,
+    });
+  } catch (err) {
+    console.error(`could not stop the agent for group ${id}:`, err);
+  }
   const fresh = getGroupById(db, id);
   const sites = await reconcileSitesSafe();
   res.json({

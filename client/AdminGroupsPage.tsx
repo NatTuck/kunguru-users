@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Card, Input, Label, Spinner } from "@heroui/react";
 import AppSlotsPanel from "./AppSlotsPanel";
+import GroupAgentModal from "./GroupAgentModal";
 import StaticSitesPanel from "./StaticSitesPanel";
 import { useGroupsStore } from "./groupsStore";
 import type { GroupSummary } from "./types";
@@ -20,6 +21,8 @@ export default function AdminGroupsPage() {
     transfer,
     disable,
     enable,
+    startAgent,
+    agentJobFor,
     clearActionError,
   } = useGroupsStore();
 
@@ -118,6 +121,14 @@ export default function AdminGroupsPage() {
                     size="sm"
                     variant="outline"
                     isDisabled={busy || !g.provisioned}
+                    onPress={() => void startAgent(g.id)}
+                  >
+                    Agent
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    isDisabled={busy || !g.provisioned}
                     onPress={() => setAppsFor(g)}
                   >
                     Apps
@@ -165,6 +176,14 @@ export default function AdminGroupsPage() {
             </Card>
           ))}
         </div>
+      )}
+
+      {agentJobFor != null && (
+        <GroupAgentModal
+          groupName={
+            adminGroups.find((g) => g.id === agentJobFor)?.username ?? ""
+          }
+        />
       )}
 
       {appsFor && (

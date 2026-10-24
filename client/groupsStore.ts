@@ -326,6 +326,7 @@ function pollAgentJob(groupId: number, jobId: number): void {
     agentPoll = null;
     await useGroupsStore.getState().load();
     const state = useGroupsStore.getState();
+    if (state.adminGroups.length > 0) await state.loadAdmin();
     if (state.detail?.group.id === groupId) await state.open(groupId);
   };
   void tick();
