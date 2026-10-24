@@ -25,6 +25,9 @@ export default function Layout() {
             <NavLink to="/" className={linkClass}>
               My account
             </NavLink>
+            <NavLink to="/groups" className={linkClass}>
+              Groups
+            </NavLink>
             {user?.role === "admin" && (
               <NavLink to="/admin/users" className={linkClass}>
                 Manage users

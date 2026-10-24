@@ -47,7 +47,7 @@ export default function Account() {
           address. Build the output into <span className="font-mono">~/www/&lt;label&gt;</span>;
           the source project lives in <span className="font-mono">~/sites/&lt;label&gt;</span>.
         </p>
-        <StaticSitesPanel />
+        <StaticSitesPanel accountId={user.id} />
       </Card>
 
       <h2 className="mt-10 mb-4 text-2xl font-semibold tracking-tight">Agent model</h2>

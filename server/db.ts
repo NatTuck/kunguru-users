@@ -383,7 +383,7 @@ export function getUserById(
  * databases without the groups schema (the query is forward-compatible with
  * the Phase 2 `group_members` table).
  */
-export function listGroupsForUser(
+export function listGroupNamesForUser(
   db: Database.Database,
   userId: number,
 ): string[] {
@@ -408,6 +408,201 @@ export function isGroupMember(
   return !!db
     .prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?")
     .get(groupId, userId);
+}
+
+// --- Groups as accounts (kind='group') ---
+//
+// A group is a users row sharing the account id space, namespace, and ports.
+// The owner is `users.owner_user_id` (also a `group_members` row with role
+// owner); members are additional rows. Groups are disabled, never deleted.
+
+export interface GroupRow {
+  id: number;
+  username: string;
+  owner_user_id: number | null;
+  owner_username: string | null;
+  enabled: number;
+  created_at: string;
+  /** The requesting user's role in the group ("admin" in the admin list). */
+  role: "owner" | "member" | "admin";
+  member_count: number;
+}
+
+export interface GroupMemberRow {
+  user_id: number;
+  username: string;
+  role: "owner" | "member";
+  added_at: string;
+}
+
+const GROUP_COLUMNS = `
+  g.id AS id, g.username AS username, g.owner_user_id AS owner_user_id,
+  o.username AS owner_username, g.enabled AS enabled,
+  g.created_at AS created_at,
+  CASE WHEN g.owner_user_id = @userId THEN 'owner'
+       WHEN m.user_id IS NOT NULL THEN m.role
+       ELSE 'admin' END AS role,
+  (SELECT COUNT(*) FROM group_members c WHERE c.group_id = g.id) AS member_count
+`;
+
+function groupRows(
+  db: Database.Database,
+  where: string,
+  params: Record<string, unknown>,
+): GroupRow[] {
+  return db
+    .prepare(
+      `SELECT ${GROUP_COLUMNS}
+         FROM users g
+         LEFT JOIN users o ON o.id = g.owner_user_id
+         LEFT JOIN group_members m
+                ON m.group_id = g.id AND m.user_id = @userId
+        WHERE g.kind = 'group' AND (${where})
+        ORDER BY g.username ASC`,
+    )
+    .all(params) as GroupRow[];
+}
+
+/** Groups the user owns or belongs to, with the user's role. */
+export function listGroupsForUser(
+  db: Database.Database,
+  userId: number,
+): GroupRow[] {
+  return groupRows(
+    db,
+    "g.owner_user_id = @userId OR m.user_id IS NOT NULL",
+    { userId },
+  );
+}
+
+/** Every group (admin view); `role` is the admin's own role where it has one. */
+export function listAllGroups(
+  db: Database.Database,
+  userId: number,
+): GroupRow[] {
+  return db
+    .prepare(
+      `SELECT ${GROUP_COLUMNS}
+         FROM users g
+         LEFT JOIN users o ON o.id = g.owner_user_id
+         LEFT JOIN group_members m
+                ON m.group_id = g.id AND m.user_id = @userId
+        WHERE g.kind = 'group'
+        ORDER BY g.username ASC`,
+    )
+    .all({ userId }) as GroupRow[];
+}
+
+export function getGroupById(
+  db: Database.Database,
+  id: number,
+): User | undefined {
+  return db
+    .prepare("SELECT * FROM users WHERE id = ? AND kind = 'group'")
+    .get(id) as User | undefined;
+}
+
+export function countOwnedGroups(
+  db: Database.Database,
+  ownerUserId: number,
+): number {
+  return (
+    db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM users WHERE kind = 'group' AND owner_user_id = ?",
+      )
+      .get(ownerUserId) as { n: number }
+  ).n;
+}
+
+export function createGroup(
+  db: Database.Database,
+  opts: { name: string; ownerUserId: number; passwordHash: string },
+): User {
+  const tx = db.transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO users (username, password_hash, role, kind, owner_user_id)
+         VALUES (?, ?, 'user', 'group', ?)`,
+      )
+      .run(opts.name, opts.passwordHash, opts.ownerUserId);
+    const id = Number(info.lastInsertRowid);
+    db.prepare(
+      "INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'owner')",
+    ).run(id, opts.ownerUserId);
+    return getUserById(db, id) as User;
+  });
+  return tx();
+}
+
+export function listGroupMembers(
+  db: Database.Database,
+  groupId: number,
+): GroupMemberRow[] {
+  return db
+    .prepare(
+      `SELECT m.user_id AS user_id, u.username AS username,
+              m.role AS role, m.added_at AS added_at
+         FROM group_members m JOIN users u ON u.id = m.user_id
+        WHERE m.group_id = ?
+        ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, u.username ASC`,
+    )
+    .all(groupId) as GroupMemberRow[];
+}
+
+export function addGroupMember(
+  db: Database.Database,
+  groupId: number,
+  userId: number,
+): boolean {
+  const info = db
+    .prepare(
+      `INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')
+       ON CONFLICT(group_id, user_id) DO NOTHING`,
+    )
+    .run(groupId, userId);
+  return info.changes > 0;
+}
+
+export function removeGroupMember(
+  db: Database.Database,
+  groupId: number,
+  userId: number,
+): boolean {
+  const info = db
+    .prepare(
+      "DELETE FROM group_members WHERE group_id = ? AND user_id = ? AND role != 'owner'",
+    )
+    .run(groupId, userId);
+  return info.changes > 0;
+}
+
+/** Admin-only ownership transfer; the previous owner stays a member. */
+export function setGroupOwner(
+  db: Database.Database,
+  groupId: number,
+  newOwnerUserId: number,
+): void {
+  const tx = db.transaction(() => {
+    const group = getGroupById(db, groupId);
+    if (!group) throw new Error("group not found");
+    const previous = group.owner_user_id;
+    db.prepare("UPDATE users SET owner_user_id = ? WHERE id = ?").run(
+      newOwnerUserId,
+      groupId,
+    );
+    db.prepare(
+      `INSERT INTO group_members (group_id, user_id, role)
+       VALUES (?, ?, 'owner')
+       ON CONFLICT(group_id, user_id) DO UPDATE SET role = 'owner'`,
+    ).run(groupId, newOwnerUserId);
+    if (previous != null && previous !== newOwnerUserId) {
+      db.prepare(
+        "UPDATE group_members SET role = 'member' WHERE group_id = ? AND user_id = ?",
+      ).run(groupId, previous);
+    }
+  });
+  tx();
 }
 
 export function listUsers(db: Database.Database): PublicUser[] {

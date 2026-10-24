@@ -1049,7 +1049,7 @@ function StaticSitesModal({
         </div>
       }
     >
-      <StaticSitesPanel userId={u.id} />
+      <StaticSitesPanel accountId={u.id} />
     </ModalShell>
   );
 }

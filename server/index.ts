@@ -9,7 +9,7 @@ import {
   getUserById,
   getUserByUsername,
   isGroupMember,
-  listGroupsForUser,
+  listGroupNamesForUser,
   ADMIN_USERNAME,
   type StaticSite,
   type User,
@@ -147,7 +147,7 @@ app.get("/internal/auth", (req, res) => {
 
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Auth-User", ctx.user.username);
-  res.setHeader("X-Auth-Groups", listGroupsForUser(db, ctx.user.id).join(","));
+  res.setHeader("X-Auth-Groups", listGroupNamesForUser(db, ctx.user.id).join(","));
   res.status(200).end();
 });
 

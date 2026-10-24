@@ -27,6 +27,46 @@ export interface AccountInfo {
   venvKind: string | null;
 }
 
+/** Result of a command run on a host (membership convergence, app actions). */
+export interface CommandResult {
+  ok: boolean;
+  output: string;
+}
+
+export interface GroupProvisionInfo extends CommandResult {
+  jobId: number;
+  status: string;
+  failedStep?: string;
+}
+
+export interface GroupMember {
+  user_id: number;
+  username: string;
+  role: "owner" | "member";
+  added_at: string;
+}
+
+export type GroupRole = "owner" | "member" | "admin";
+
+export interface GroupSummary {
+  id: number;
+  username: string;
+  role: GroupRole;
+  owner_username: string | null;
+  enabled: number;
+  created_at: string;
+  member_count: number;
+  provisioned: boolean;
+  host: string | null;
+  status: "pending" | "active" | "failed" | null;
+}
+
+export interface GroupDetail {
+  group: GroupSummary;
+  members: GroupMember[];
+  canManage: boolean;
+}
+
 /** An account's two app slots (user units installed by provisioning). */
 export type AppSlot = "app" | "app-dev";
 

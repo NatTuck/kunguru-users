@@ -13,17 +13,22 @@ import { useConfigStore, staticSiteUrl } from "./configStore";
 import type { StaticSite } from "./types";
 import { Mono, StatusChip } from "./ui";
 
-// Static sites for one owner. With `userId` it is the admin view of another
-// account's sites; without it, the signed-in user's own sites (self-service).
+// Static sites for one account (a user, or a group). The same panel is used on
+// the Account page, in the admin per-account modal, and on the Groups page
+// (where `canManage` is false for a group member: members can read the list but
+// only the group's owner creates/removes sites).
 // A site is `<label>.<base>`, served from the owner's `~/www/<label>`; the
 // source/build project is `~/sites/<label>`.
-export default function StaticSitesPanel({ userId }: { userId?: number }) {
+export default function StaticSitesPanel({
+  accountId,
+  canManage = true,
+}: {
+  accountId: number;
+  canManage?: boolean;
+}) {
   const config = useConfigStore((s) => s.config);
   const baseDomain = config?.baseDomain ?? "";
-  const base =
-    userId == null
-      ? "/api/me/static-sites"
-      : `/api/users/${userId}/static-sites`;
+  const base = `/api/accounts/${accountId}/static-sites`;
 
   const [sites, setSites] = useState<StaticSite[] | null>(null);
   const [limit, setLimit] = useState(5);
@@ -154,15 +159,17 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      isDisabled={busy}
-                      onPress={() => void setAuth(s.id, !s.require_auth)}
-                    >
-                      {s.require_auth ? "Make public" : "Require login"}
-                    </Button>
-                    {confirming === s.id ? (
+                    {canManage && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        isDisabled={busy}
+                        onPress={() => void setAuth(s.id, !s.require_auth)}
+                      >
+                        {s.require_auth ? "Make public" : "Require login"}
+                      </Button>
+                    )}
+                    {canManage && confirming === s.id ? (
                       <>
                         <Button
                           size="sm"
@@ -183,7 +190,7 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
                           Cancel
                         </Button>
                       </>
-                    ) : (
+                    ) : canManage ? (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -192,14 +199,14 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
                       >
                         Remove
                       </Button>
-                    )}
+                    ) : null}
                   </div>
                 </li>
               );
             })}
           </ul>
         )}
-        {sites != null && sites.length > 0 && (
+        {canManage && sites != null && sites.length > 0 && (
           <p className="text-xs text-neutral-500">
             Removing a site drops its route; the files in{" "}
             <span className="font-mono">~/sites</span> and{" "}
@@ -208,6 +215,7 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
         )}
       </div>
 
+      {canManage && (
       <div className="space-y-3 border-t border-neutral-100 pt-4">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="site-label">Label</Label>
@@ -267,6 +275,7 @@ export default function StaticSitesPanel({ userId }: { userId?: number }) {
           </Button>
         </div>
       </div>
+      )}
     </div>
   );
 }

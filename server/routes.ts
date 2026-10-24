@@ -1,7 +1,10 @@
 import { Router, type Response } from "express";
 import {
+  addGroupMember,
   countAdmins,
+  countOwnedGroups,
   countStaticSitesForOwner,
+  createGroup,
   createStaticSite,
   createUser,
   deleteSessionsForUser,
@@ -9,6 +12,7 @@ import {
   generatePassword,
   getAccountForUser,
   getDb,
+  getGroupById,
   getHostById,
   getJob,
   getJobSteps,
@@ -17,15 +21,21 @@ import {
   getUserById,
   isGroupMember,
   getUserByUsername,
+  listAllGroups,
+  listGroupMembers,
+  listGroupsForUser,
   listHosts,
   listJobsForUser,
   listStaticSitesForOwner,
   listUsersWithAccounts,
+  removeGroupMember,
+  setGroupOwner,
   setStaticSiteRequireAuth,
   setUserEnabled,
   setUserRole,
   toAdminRows,
   updateUserPasswordHash,
+  type GroupRow,
   type Host,
   type Role,
   type StaticSite,
@@ -42,13 +52,16 @@ import {
 } from "./auth";
 import {
   deactivateUserAccess,
+  ensureGroupMembership,
   getFleetUpdateState,
   sendAgentXmppMessage,
   startAgentUpdate,
   startFleetAgentUpdate,
   startStandardAccountProvision,
+  provisionGroup,
   syncSnikketPassword,
   applyUserModel,
+  type GroupProvisionResult,
   type ProvisionResult,
 } from "./provision";
 import {
@@ -100,6 +113,20 @@ function isRole(value: unknown): value is Role {
 // site hostnames (see server/sites.ts).
 function isValidUsername(value: unknown): value is string {
   return isProvisionableUsername(value);
+}
+
+// Group rows are accounts, but their lifecycle (provisioning, membership,
+// disabling) is the groups API. The user-admin routes operate on people.
+function rejectGroup(
+  target: { kind: "user" | "group" },
+  res: Response,
+  action: string,
+): boolean {
+  if (target.kind !== "group") return false;
+  res.status(400).json({
+    error: `this account is a group; use the groups API to ${action} it`,
+  });
+  return true;
 }
 
 function parseId(raw: unknown): number | null {
@@ -532,6 +559,9 @@ api.patch("/users/:id/role", requireAuth, requireAdmin, (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  if (rejectGroup(target, res, "manage")) {
+    return;
+  }
   if (!target.enabled) {
     res.status(400).json({ error: "user is disabled; enable it first" });
     return;
@@ -561,6 +591,9 @@ api.post("/users/:id/disable", requireAuth, requireAdmin, async (req, res) => {
   const target = getUserById(db, id);
   if (!target) {
     res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (rejectGroup(target, res, "manage")) {
     return;
   }
   if (id === currentUserId(res)) {
@@ -634,6 +667,9 @@ api.post("/users/:id/enable", requireAuth, requireAdmin, async (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  if (rejectGroup(target, res, "manage")) {
+    return;
+  }
   if (target.enabled) {
     res.status(400).json({ error: "user is already enabled" });
     return;
@@ -686,6 +722,9 @@ api.post("/users/:id/provision", requireAuth, requireAdmin, async (req, res) => 
     res.status(404).json({ error: "user not found" });
     return;
   }
+  if (rejectGroup(target, res, "manage")) {
+    return;
+  }
   if (!target.enabled) {
     res.status(400).json({ error: "user is disabled; enable it first" });
     return;
@@ -736,6 +775,9 @@ api.post("/users/:id/update", requireAuth, requireAdmin, (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  if (rejectGroup(target, res, "manage")) {
+    return;
+  }
   if (!target.enabled) {
     res.status(400).json({ error: "user is disabled; enable it first" });
     return;
@@ -783,6 +825,9 @@ api.post("/users/:id/reset-password", requireAuth, requireAdmin, async (req, res
   const target = getUserById(db, id);
   if (!target) {
     res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (rejectGroup(target, res, "manage")) {
     return;
   }
   if (!target.enabled) {
@@ -844,6 +889,9 @@ api.post("/users/:id/message", requireAuth, requireAdmin, async (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  if (rejectGroup(target, res, "manage")) {
+    return;
+  }
   if (!target.enabled) {
     res.status(400).json({ error: "user is disabled; enable it first" });
     return;
@@ -893,8 +941,12 @@ api.get("/users/:id/model", requireAuth, requireAdmin, async (req, res) => {
     return;
   }
   const db = getDb();
-  if (!getUserById(db, id)) {
+  const target = getUserById(db, id);
+  if (!target) {
     res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (rejectGroup(target, res, "manage")) {
     return;
   }
   try {
@@ -917,6 +969,9 @@ api.post("/users/:id/model", requireAuth, requireAdmin, async (req, res) => {
   const target = getUserById(db, id);
   if (!target) {
     res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (rejectGroup(target, res, "manage")) {
     return;
   }
   const { model } = (req.body ?? {}) as { model?: unknown };
@@ -954,13 +1009,14 @@ api.get("/jobs/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ job, steps: getJobSteps(db, id) });
 });
 
-// --- Static sites (owner-scoped) ---
+// --- Account-scoped static sites ---
 //
 // A static site is `<label>.<base>`, served from the owner's `~/www/<label>` by
 // the nginx on the owner's host (the gateway forwards to
 // `<owner-host>:14000`). The source/build project lives in `~/sites/<label>`.
-// Owners are users or groups; 5 sites per owner. Removing a site drops the
-// route only -- the owner's files are kept.
+// The owner is an account: a user, or a group (whose owner manages its sites;
+// members may read them). 5 sites per owner. Removing a site drops the route
+// only -- the files are kept.
 
 const STATIC_SITE_LIMIT = 5;
 
@@ -995,6 +1051,40 @@ function currentUser(res: {
   locals: { session?: { user: SessionUser } };
 }): SessionUser | undefined {
   return res.locals.session?.user;
+}
+
+interface AccountTarget {
+  account: User;
+  host: Host;
+}
+
+// Authorization for account-scoped resources. Admins always; otherwise the
+// account itself, plus (for a group) its members. `manage` narrows group access
+// to the group's owner -- static sites use that, while app slots let any member
+// operate them.
+function accountTargetFor(
+  res: Response,
+  id: number,
+  opts: { manage?: boolean } = {},
+): { target: AccountTarget } | { status: number; error: string } {
+  const user = currentUser(res);
+  if (!user) return { status: 401, error: "unauthorized" };
+  const db = getDb();
+  const account = getUserById(db, id);
+  if (!account) return { status: 404, error: "account not found" };
+  const isOwner =
+    account.id === user.id ||
+    (account.kind === "group" && account.owner_user_id === user.id);
+  const isMember =
+    account.kind === "group" && isGroupMember(db, account.id, user.id);
+  const allowed =
+    user.role === "admin" || (opts.manage ? isOwner : isOwner || isMember);
+  if (!allowed) return { status: 403, error: "forbidden" };
+  const hostAccount = getAccountForUser(db, account.id);
+  if (!hostAccount) {
+    return { status: 400, error: "account is not provisioned" };
+  }
+  return { target: { account, host: hostAccount.host } };
 }
 
 // Site labels share the account namespace, so a label may not collide with a
@@ -1067,79 +1157,58 @@ async function createSiteFor(
   res.status(201).json({ site: siteView(site, owner.username), sites });
 }
 
-// A site may be managed by its owner or by an admin. Group-owned sites are
-// admin-only for now; Phase 3 adds member management.
+// A site may be managed by its owner (a user, or a group's owner) or an admin.
 function siteManageable(
+  db: ReturnType<typeof getDb>,
   site: StaticSite,
   user: SessionUser | undefined,
 ): boolean {
   if (!user) return false;
-  return user.role === "admin" || site.owner_id === user.id;
+  if (user.role === "admin") return true;
+  if (site.owner_kind === "user") return site.owner_id === user.id;
+  const group = getGroupById(db, site.owner_id);
+  return !!group && group.owner_user_id === user.id;
 }
 
-// Admin: a specific account's static sites.
-api.get("/users/:id/static-sites", requireAuth, requireAdmin, (req, res) => {
+// An account's static sites (self, group member read, admin).
+api.get("/accounts/:id/static-sites", requireAuth, (req, res) => {
   const id = parseId(req.params.id);
   if (id == null) {
     res.status(400).json({ error: "invalid id" });
     return;
   }
+  const found = accountTargetFor(res, id);
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const { account } = found.target;
   const db = getDb();
-  const owner = getUserById(db, id);
-  if (!owner) {
-    res.status(404).json({ error: "user not found" });
-    return;
-  }
   res.json({
-    sites: listStaticSitesForOwner(db, id).map((s) => siteView(s, owner.username)),
-    limit: STATIC_SITE_LIMIT,
-  });
-});
-
-api.post("/users/:id/static-sites", requireAuth, requireAdmin, async (req, res) => {
-  const id = parseId(req.params.id);
-  if (id == null) {
-    res.status(400).json({ error: "invalid id" });
-    return;
-  }
-  const db = getDb();
-  const owner = getUserById(db, id);
-  if (!owner) {
-    res.status(404).json({ error: "user not found" });
-    return;
-  }
-  await createSiteFor(res, owner, (req.body ?? {}) as Record<string, unknown>);
-});
-
-// Self-service: the signed-in user's own static sites. (Phase 3 adds sites
-// owned by the user's groups.)
-api.get("/me/static-sites", requireAuth, (_req, res) => {
-  const user = currentUser(res);
-  if (!user) {
-    res.status(401).json({ error: "unauthorized" });
-    return;
-  }
-  res.json({
-    sites: listStaticSitesForOwner(getDb(), user.id).map((s) =>
-      siteView(s, user.username),
+    sites: listStaticSitesForOwner(db, account.id).map((s) =>
+      siteView(s, account.username),
     ),
     limit: STATIC_SITE_LIMIT,
   });
 });
 
-api.post("/me/static-sites", requireAuth, async (req, res) => {
-  const user = currentUser(res);
-  if (!user) {
-    res.status(401).json({ error: "unauthorized" });
+// Create a site for the account (the account itself, a group's owner, admin).
+api.post("/accounts/:id/static-sites", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
     return;
   }
-  const db = getDb();
-  const owner = getUserById(db, user.id);
-  if (!owner) {
-    res.status(401).json({ error: "unauthorized" });
+  const found = accountTargetFor(res, id, { manage: true });
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
     return;
   }
-  await createSiteFor(res, owner, (req.body ?? {}) as Record<string, unknown>);
+  await createSiteFor(
+    res,
+    found.target.account,
+    (req.body ?? {}) as Record<string, unknown>,
+  );
 });
 
 api.patch("/static-sites/:id", requireAuth, async (req, res) => {
@@ -1159,7 +1228,7 @@ api.patch("/static-sites/:id", requireAuth, async (req, res) => {
     res.status(404).json({ error: "static site not found" });
     return;
   }
-  if (!siteManageable(site, currentUser(res))) {
+  if (!siteManageable(db, site, currentUser(res))) {
     res.status(403).json({ error: "forbidden" });
     return;
   }
@@ -1184,7 +1253,7 @@ api.delete("/static-sites/:id", requireAuth, async (req, res) => {
     res.status(404).json({ error: "static site not found" });
     return;
   }
-  if (!siteManageable(site, currentUser(res))) {
+  if (!siteManageable(db, site, currentUser(res))) {
     res.status(403).json({ error: "forbidden" });
     return;
   }
@@ -1208,33 +1277,6 @@ function isAppSlot(value: unknown): value is AppSlot {
 
 function isAppAction(value: unknown): value is AppAction {
   return value === "enable" || value === "disable" || value === "restart";
-}
-
-interface AccountTarget {
-  account: User;
-  host: Host;
-}
-
-// Authorization: admins, the account itself, and any member of a group account.
-function accountTargetFor(
-  res: Response,
-  id: number,
-): { target: AccountTarget } | { status: number; error: string } {
-  const user = currentUser(res);
-  if (!user) return { status: 401, error: "unauthorized" };
-  const db = getDb();
-  const account = getUserById(db, id);
-  if (!account) return { status: 404, error: "account not found" };
-  const allowed =
-    user.role === "admin" ||
-    account.id === user.id ||
-    (account.kind === "group" && isGroupMember(db, account.id, user.id));
-  if (!allowed) return { status: 403, error: "forbidden" };
-  const hostAccount = getAccountForUser(db, account.id);
-  if (!hostAccount) {
-    return { status: 400, error: "account is not provisioned" };
-  }
-  return { target: { account, host: hostAccount.host } };
 }
 
 api.get("/accounts/:id/apps", requireAuth, async (req, res) => {
@@ -1344,4 +1386,410 @@ api.get("/accounts/:id/apps/:slot/logs", requireAuth, async (req, res) => {
       error: err instanceof Error ? err.message : "could not read app logs",
     });
   }
+});
+
+// --- Groups (accounts shared by members) ---
+//
+// A group is an account (users.kind='group') with an owner and members. The
+// owner manages it; members can use it (its app slots and hosts) and read it.
+// Groups are disabled, never deleted; ownership transfer is admin-only.
+// Self-service creation is capped and provisions on the owner's host.
+
+const GROUP_LIMIT = 5;
+
+interface GroupView {
+  id: number;
+  username: string;
+  role: "owner" | "member" | "admin";
+  owner_username: string | null;
+  enabled: number;
+  created_at: string;
+  member_count: number;
+  provisioned: boolean;
+  host: string | null;
+  status: "pending" | "active" | "failed" | null;
+}
+
+function groupView(db: ReturnType<typeof getDb>, row: GroupRow): GroupView {
+  const account = getAccountForUser(db, row.id);
+  return {
+    id: row.id,
+    username: row.username,
+    role: row.role,
+    owner_username: row.owner_username,
+    enabled: row.enabled,
+    created_at: row.created_at,
+    member_count: row.member_count,
+    provisioned: !!account,
+    host: account?.host.name ?? null,
+    status: account?.status ?? null,
+  };
+}
+
+function groupViewFrom(
+  db: ReturnType<typeof getDb>,
+  group: User,
+  role: GroupView["role"],
+): GroupView {
+  const account = getAccountForUser(db, group.id);
+  const members = listGroupMembers(db, group.id);
+  const owner = members.find((m) => m.role === "owner");
+  return {
+    id: group.id,
+    username: group.username,
+    role,
+    owner_username: owner?.username ?? null,
+    enabled: group.enabled,
+    created_at: group.created_at,
+    member_count: members.length,
+    provisioned: !!account,
+    host: account?.host.name ?? null,
+    status: account?.status ?? null,
+  };
+}
+
+interface GroupAccess {
+  group: User;
+  role: GroupView["role"];
+}
+
+// Read: admins, the owner, members. Manage: admins and the owner.
+function groupAccess(
+  res: Response,
+  id: number,
+  opts: { manage?: boolean } = {},
+): { access: GroupAccess } | { status: number; error: string } {
+  const user = currentUser(res);
+  if (!user) return { status: 401, error: "unauthorized" };
+  const db = getDb();
+  const group = getGroupById(db, id);
+  if (!group) return { status: 404, error: "group not found" };
+  const isOwner = group.owner_user_id === user.id;
+  const isMember = isGroupMember(db, group.id, user.id);
+  const isAdmin = user.role === "admin";
+  const allowed = isAdmin || (opts.manage ? isOwner : isOwner || isMember);
+  if (!allowed) return { status: 403, error: "forbidden" };
+  const role: GroupView["role"] = isOwner
+    ? "owner"
+    : isMember
+      ? "member"
+      : "admin";
+  return { access: { group, role } };
+}
+
+// My groups (owned + member-of) and the self-service cap.
+api.get("/groups", requireAuth, (_req, res) => {
+  const user = currentUser(res);
+  if (!user) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const db = getDb();
+  res.json({
+    groups: listGroupsForUser(db, user.id).map((g) => groupView(db, g)),
+    limit: GROUP_LIMIT,
+    owned: countOwnedGroups(db, user.id),
+  });
+});
+
+// Create a group and provision it on the owner's host. The DB row is created
+// first (groups are disable-only), then the converge runs inline so the caller
+// gets the log; a failed converge is reported, not hidden.
+api.post("/groups", requireAuth, async (req, res) => {
+  const user = currentUser(res);
+  if (!user) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const { name } = (req.body ?? {}) as { name?: unknown };
+  if (!isProvisionableUsername(name)) {
+    res.status(400).json({ error: `invalid group name: ${LABEL_RULE}` });
+    return;
+  }
+  const db = getDb();
+  if (getUserByUsername(db, name)) {
+    res.status(409).json({ error: "name already exists" });
+    return;
+  }
+  if (getStaticSiteByLabel(db, name)) {
+    res.status(409).json({ error: "name collides with a static-site label" });
+    return;
+  }
+  if (countOwnedGroups(db, user.id) >= GROUP_LIMIT) {
+    res.status(409).json({ error: `at most ${GROUP_LIMIT} owned groups` });
+    return;
+  }
+  const ownerAccount = getAccountForUser(db, user.id);
+  if (!ownerAccount || !ownerAccount.host.enabled) {
+    res.status(400).json({
+      error: "provision your own account before creating groups",
+    });
+    return;
+  }
+  let group: User;
+  try {
+    group = createGroup(db, {
+      name,
+      ownerUserId: user.id,
+      passwordHash: await hashPassword(generatePassword()),
+    });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
+    ) {
+      res.status(409).json({ error: "name already exists" });
+      return;
+    }
+    throw err;
+  }
+  let provisioning: GroupProvisionResult;
+  try {
+    provisioning = await provisionGroup({
+      group,
+      hostId: ownerAccount.host_id,
+      createdBy: user.id,
+    });
+  } catch (err) {
+    provisioning = {
+      ok: false,
+      jobId: 0,
+      status: "failed",
+      output: err instanceof Error ? err.message : "provisioning failed",
+    };
+  }
+  const fresh = getGroupById(db, group.id);
+  res.status(201).json({
+    group: fresh ? groupViewFrom(db, fresh, "owner") : null,
+    members: listGroupMembers(db, group.id),
+    provisioning,
+  });
+});
+
+api.get("/groups/:id", requireAuth, (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = groupAccess(res, id);
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const user = currentUser(res);
+  const db = getDb();
+  res.json({
+    group: groupViewFrom(db, found.access.group, found.access.role),
+    members: listGroupMembers(db, id),
+    canManage:
+      user?.role === "admin" ||
+      found.access.group.owner_user_id === user?.id,
+  });
+});
+
+// Add a member by username (owner/admin). Converges the Linux group.
+api.post("/groups/:id/members", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = groupAccess(res, id, { manage: true });
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const { username } = (req.body ?? {}) as { username?: unknown };
+  if (typeof username !== "string" || !username.trim()) {
+    res.status(400).json({ error: "username is required" });
+    return;
+  }
+  const db = getDb();
+  const member = getUserByUsername(db, username.trim());
+  if (!member) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  if (member.kind !== "user") {
+    res.status(400).json({ error: "a group cannot be a member of a group" });
+    return;
+  }
+  if (!member.enabled) {
+    res.status(400).json({ error: "user is disabled" });
+    return;
+  }
+  addGroupMember(db, id, member.id);
+  const membership = await ensureGroupMembership(found.access.group);
+  res.json({ members: listGroupMembers(db, id), membership });
+});
+
+// Remove a member (owner/admin). The owner must be transferred, not removed.
+api.delete("/groups/:id/members/:userId", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  const userId = parseId(req.params.userId);
+  if (id == null || userId == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = groupAccess(res, id, { manage: true });
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const db = getDb();
+  const member = listGroupMembers(db, id).find((m) => m.user_id === userId);
+  if (!member) {
+    res.status(404).json({ error: "member not found" });
+    return;
+  }
+  if (member.role === "owner") {
+    res.status(400).json({ error: "transfer ownership before removing the owner" });
+    return;
+  }
+  removeGroupMember(db, id, userId);
+  const membership = await ensureGroupMembership(found.access.group);
+  res.json({ members: listGroupMembers(db, id), membership });
+});
+
+// Disable/enable (disable-only lifecycle; the account and files are kept).
+api.post("/groups/:id/disable", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = groupAccess(res, id, { manage: true });
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const db = getDb();
+  setUserEnabled(db, id, false);
+  const fresh = getGroupById(db, id);
+  const sites = await reconcileSitesSafe();
+  res.json({
+    group: fresh ? groupViewFrom(db, fresh, found.access.role) : null,
+    sites,
+  });
+});
+
+api.post("/groups/:id/enable", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = groupAccess(res, id, { manage: true });
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const db = getDb();
+  setUserEnabled(db, id, true);
+  const membership = await ensureGroupMembership(found.access.group);
+  const fresh = getGroupById(db, id);
+  const sites = await reconcileSitesSafe();
+  res.json({
+    group: fresh ? groupViewFrom(db, fresh, found.access.role) : null,
+    membership,
+    sites,
+  });
+});
+
+// Retry/converge the group account (Linux user+group, home, app slots).
+api.post("/groups/:id/provision", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = groupAccess(res, id, { manage: true });
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const db = getDb();
+  const group = found.access.group;
+  const existing = getAccountForUser(db, id);
+  let hostId = existing?.host_id ?? null;
+  if (hostId == null && group.owner_user_id != null) {
+    const ownerAccount = getAccountForUser(db, group.owner_user_id);
+    hostId = ownerAccount?.host_id ?? null;
+  }
+  if (hostId == null) {
+    res.status(400).json({
+      error: "no host: the group owner has no provisioned account",
+    });
+    return;
+  }
+  try {
+    const provisioning = await provisionGroup({
+      group,
+      hostId,
+      createdBy: currentUser(res)?.id ?? null,
+    });
+    const fresh = getGroupById(db, id);
+    res.json({
+      group: fresh ? groupViewFrom(db, fresh, found.access.role) : null,
+      members: listGroupMembers(db, id),
+      provisioning,
+    });
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "provisioning failed",
+    });
+  }
+});
+
+// Admin: transfer ownership (the previous owner stays a member).
+api.post("/groups/:id/owner", requireAuth, requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const db = getDb();
+  const group = getGroupById(db, id);
+  if (!group) {
+    res.status(404).json({ error: "group not found" });
+    return;
+  }
+  const { username } = (req.body ?? {}) as { username?: unknown };
+  if (typeof username !== "string" || !username.trim()) {
+    res.status(400).json({ error: "username is required" });
+    return;
+  }
+  const next = getUserByUsername(db, username.trim());
+  if (!next || next.kind !== "user") {
+    res.status(400).json({ error: "the new owner must be a user account" });
+    return;
+  }
+  if (!next.enabled) {
+    res.status(400).json({ error: "user is disabled" });
+    return;
+  }
+  setGroupOwner(db, id, next.id);
+  const fresh = getGroupById(db, id) as User;
+  const membership = await ensureGroupMembership(fresh);
+  const user = currentUser(res);
+  res.json({
+    group: groupViewFrom(
+      db,
+      fresh,
+      fresh.owner_user_id === user?.id ? "owner" : "admin",
+    ),
+    members: listGroupMembers(db, id),
+    membership,
+  });
+});
+
+// Admin: every group (the admin user list only shows people).
+api.get("/admin/groups", requireAuth, requireAdmin, (_req, res) => {
+  const user = currentUser(res);
+  const db = getDb();
+  res.json({
+    groups: listAllGroups(db, user?.id ?? -1).map((g) => groupView(db, g)),
+    limit: GROUP_LIMIT,
+  });
 });

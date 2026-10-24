@@ -1,8 +1,9 @@
 # Groups, apps, and static sites — design & implementation plan
 
-Status: **Phase 1 and Phase 2a implemented** on `feature/groups` (not deployed).
-Phase 2b (app units/run scripts, provisioning of `~/.local/apps/app*`, migration
-of the existing sites/apps) and Phase 3 (groups) are not started.
+Status: **Phases 1, 2a and 2b implemented, plus Phase 3a (groups as shared
+accounts)**, on `feature/groups` (not deployed). Remaining: Phase 3b (Hermes for
+groups: root profile, SOUL.md, WebUI map, message-as-agent), the admin groups
+view, and the live migration/cutover.
 
 Related: `notes/auth-protocol.md`, `notes/deploy.md`,
 `scripts/hermes/ensure.sh`, `scripts/webui/ensure.sh`.
@@ -177,6 +178,19 @@ App slots (per account):
   deployments) and the host's VPN/LAN address otherwise — derived from the host
   row, never hardcoded.
 
+Group accounts (Phase 3a):
+
+- `scripts/account/ensure-group.sh`: `useradd --user-group`, locked login,
+  linger, and a shared home (`2770`, setgid, group = the group) so members can
+  read/write while other tenants cannot enter.
+- `scripts/account/ensure-membership.sh`: converges the Linux group to the
+  app's `group_members` rows (`gpasswd -a`/`-d`); run after provisioning and
+  after every membership change. Membership applies to new sessions.
+- Self-service groups are provisioned on the owner's host; an admin can retry
+  (Repair) or choose a host through the same provisioning path.
+- Group Hermes (root profile, `SOUL.md`, WebUI map, message-as-agent) is Phase
+  3b; a group currently gets no Snikket or Hermes.
+
 Hermes (optional, per account):
 
 - agent-only XMPP account `<name>-agent@chat.<base>`; allowed users = member
@@ -220,8 +234,11 @@ Gateway:
   - group host: allow members/owner.
 - `Remote-Groups` carries the signed-in user's group names.
 - Login filters `kind='user'`; `resolveSession` rejects groups.
-- Self-service `/api/groups` and `/api/static-sites`: owner/member read; owner
-  manage; admin override.
+- Self-service `/api/groups` (list/create/members/disable/enable/provision):
+  owner/member read; owner manage; admin override. Account-scoped resources use
+  `/api/accounts/:id/...`: app slots let any member operate them, static sites
+  are owner-manage/member-read. Admin: `GET /api/admin/groups`, ownership
+  transfer (`POST /api/groups/:id/owner`).
 - Admin user list filters `kind='user'`; hide human-only actions for groups.
 - Message-as-agent for groups: pick a member; send from `<group>-agent` to that
   member's JID.
@@ -276,10 +293,15 @@ Gateway:
   provision status/log, restart/logs, repair, message (member picker).
 - **Static sites page**: my sites (owned), create ≤5 (label + source/served
   paths), `require_auth`, delete (route only; files retained), status.
+- **Groups page** (Phase 3a): my groups (owned + member-of), create (≤5),
+  members (add/remove for the owner), app slots and static sites per group,
+  provision/repair, disable/enable; members see the group read-only except for
+  its app slots.
 - **Account page**: the app-slot panel (state, enable/disable, restart, logs,
-  links) and static sites; group apps reuse the same panel.
-- **Admin**: the same app-slot panel per account (users now, groups in Phase 3);
-  group members get it through the group page.
+  links) and static sites.
+- **Admin**: the same app-slot panel and static-site panel per account; the
+  admin groups view (all groups, transfer) is still to come — the API
+  (`/api/admin/groups`, `/api/groups/:id/owner`) exists.
 - App-slot `require_auth`/`require_auth_dev` are enforced by `/internal/auth`
   but have **no UI yet**; set the columns directly until the self-service
   toggle lands in Phase 3.
@@ -293,7 +315,8 @@ Gateway:
   Hermes).
 - **Static site**: create DB row, make `~/www/<label>`, ACLs, render the
   user-server nginx + gateway route; delete removes the route (files remain).
-- **Member add/remove**: Linux group, XMPP allowlist, `SOUL.md`, agent restart.
+- **Member add/remove**: Linux group (Phase 3a), then XMPP allowlist,
+  `SOUL.md`, agent restart (Phase 3b).
 - **Disable/enable**: routes and auth drop; home/files retained.
 - **Ownership transfer**: admin only.
 - **Message-as-agent**: member picker.
@@ -378,14 +401,18 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
   (`scripts/nginx/ensure-user-static.sh`, dirs + ACLs);
   `/api/static-sites` + admin routes; UI (app/app-dev cards, static-sites panel
   and admin modal).
-- todo (2b): app units `app`/`app-dev` + convention `run` scripts, provisioning
-  of `~/.local/apps/app*`; migration of the existing sites/apps (see §15).
+- done (2b): app slots as user units + convention `run` scripts, provisioning,
+  and the in-app control surface (state, enable/disable, restart, logs).
+- todo (2b): migration of the existing sites/apps (see §15).
 
 **Phase 3 — Groups**
-- schema already; provisioning (Linux user/group, home, optional Hermes root
-  profile + SOUL.md + WebUI map, Bifrost key, app units);
-- owner-aware auth + membership propagation; self-service `/api/groups`;
-- UI; message-as-agent; capacity cap.
+- done (3a): group accounts (Linux user/group, shared 2770 home, app slots),
+  membership convergence, owner-aware auth (hosts, app slots, static sites),
+  self-service `/api/groups` + capacity cap (5 owned), Groups page, disable/
+  enable, admin ownership transfer API.
+- todo (3b): Hermes for groups (root profile, `SOUL.md` roster, WebUI profile
+  map, Bifrost key), message-as-agent with a member picker, admin groups view,
+  per-group resource limits.
 
 **Phase 4 — Multi-host (deferred)**.
 
@@ -407,6 +434,13 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
 - `scripts/account/app-control.sh` — status / enable / disable / restart / logs.
 - `server/apps.ts` — transport + status parsing for the app slots.
 - `client/AppSlotsPanel.tsx` — the control surface.
+- `scripts/account/ensure-group.sh` — the Linux user/group + shared home.
+- `scripts/account/ensure-membership.sh` — Linux group membership.
+- `server/provision.ts` — `GROUP_ACCOUNT_PROFILE`, `provisionGroup`,
+  `ensureGroupMembership`.
+- `server/routes.ts` — `/api/groups`, `/api/admin/groups`, account-scoped
+  static sites.
+- `client/groupsStore.ts`, `client/GroupsPage.tsx` — the Groups page.
 - `server/sites.ts` — app/app-dev/webui routes; static-site routes to the
   owner-host static port; drop alias routes.
 - `server/nginx.ts` — `reconcileUserSites` (gateway), `reconcileUserStaticSites`
@@ -440,7 +474,11 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
   retired `.users.` hosts redirect to the two-port hosts.
 - Identity: `Remote-User`/`Remote-Groups` on apps; cookie not visible to
   upstreams; anonymous optional; WebUI/require_auth redirect.
-- Groups: Linux user/group, home, membership, Hermes root profile + SOUL.md,
-  WebUI member access, message-as-agent.
+- Groups (3a): create (≤5), Linux user/group + 2770 home, membership add/remove
+  converges the Linux group, owner/member/admin authorization on the group, its
+  app slots and its static sites, disable drops the routes, ownership transfer,
+  group members can operate app slots but only the owner manages sites.
+- Groups (3b): Hermes root profile + SOUL.md, WebUI member access,
+  message-as-agent.
 - Limits: 5 groups/user, 5 static sites/owner; capacity errors.
 - `pnpm check` (tsc + check-config) and a build.

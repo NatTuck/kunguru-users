@@ -15,6 +15,7 @@ import {
   getJob,
   getJobSteps,
   listActiveAccountUsers,
+  listGroupMembers,
   setAccountAgentInfo,
   setAccountModel,
   setAccountStatus,
@@ -57,6 +58,10 @@ export const AGENT_UPDATE_PROFILE = "agent-update";
 export const PASSWORD_SYNC_PROFILE = "password-sync";
 // Switch a tenant's default model and restart the agent gateway + WebUI.
 export const MODEL_SET_PROFILE = "model-set";
+// Create/converge a group account: the Linux user+group that backs a group and
+// its two app slots. Group Hermes (root profile, SOUL.md, WebUI map) is a later
+// step; membership converges separately after any membership change.
+export const GROUP_ACCOUNT_PROFILE = "group-account";
 
 type StepTarget = "user-host" | "snikket-host";
 
@@ -92,6 +97,10 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
   ],
   [MODEL_SET_PROFILE]: [
     { name: "hermes-model", scriptRel: "hermes/set-model.sh", target: "user-host" },
+  ],
+  [GROUP_ACCOUNT_PROFILE]: [
+    { name: "linux-group", scriptRel: "account/ensure-group.sh", target: "user-host" },
+    { name: "app-slots", scriptRel: "account/ensure-apps.sh", target: "user-host" },
   ],
   [AGENT_UPDATE_PROFILE]: [
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
@@ -426,6 +435,110 @@ async function runStandardAccountProvision(opts: {
   } catch (err) {
     console.error(`site reconcile after job ${opts.jobId} failed:`, err);
   }
+}
+
+export interface GroupProvisionResult {
+  ok: boolean;
+  jobId: number;
+  status: JobStatus;
+  failedStep?: string;
+  output: string;
+}
+
+/**
+ * Creates/converges a group account on a host: the Linux user+group, the shared
+ * home, and the two app slots. Runs inline (a group converge is seconds, not
+ * the minutes a Hermes install takes) and returns the step log so the caller
+ * can surface a failure. Membership is converged afterwards.
+ */
+export async function provisionGroup(opts: {
+  group: Pick<User, "id" | "username">;
+  hostId: number;
+  createdBy: number | null;
+}): Promise<GroupProvisionResult> {
+  const db = getDb();
+  const host = getHostById(db, opts.hostId);
+  if (!host || !host.enabled) throw new Error("target host not found or disabled");
+
+  let account = getAccountByUserHost(db, opts.group.id, host.id);
+  if (!account) account = createAccount(db, opts.group.id, host.id);
+
+  const jobId = createJob(db, {
+    hostId: host.id,
+    profile: GROUP_ACCOUNT_PROFILE,
+    createdBy: opts.createdBy,
+  }).id;
+  const steps = PROFILES[GROUP_ACCOUNT_PROFILE].map((def) => ({
+    def,
+    host,
+  }));
+  const result = await runJob({
+    user: opts.group,
+    createdBy: opts.createdBy,
+    profile: GROUP_ACCOUNT_PROFILE,
+    jobHostId: host.id,
+    jobId,
+    steps,
+  });
+  setAccountStatus(
+    db,
+    account.id,
+    result.status === "succeeded" ? "active" : "failed",
+    result.jobId,
+  );
+
+  let membership: { ok: boolean; output: string } | null = null;
+  if (result.status === "succeeded") {
+    membership = await ensureGroupMembership(opts.group);
+  }
+
+  const output = getJobSteps(db, result.jobId)
+    .map((s) => `[${s.script}]\n${(s.output_log ?? "").trim()}`)
+    .join("\n");
+  try {
+    await reconcileSites();
+  } catch (err) {
+    console.error(`site reconcile after group job ${result.jobId} failed:`, err);
+  }
+  return {
+    ok: result.status === "succeeded" && (membership?.ok ?? true),
+    jobId: result.jobId,
+    status: result.status,
+    failedStep: result.failedStep,
+    output: membership
+      ? `${output}\n[membership]\n${membership.output.trim()}`
+      : output,
+  };
+}
+
+/**
+ * Converges the Linux group membership to the app's `group_members` rows. Safe
+ * to call after any membership change; a failure is returned, not thrown.
+ */
+export async function ensureGroupMembership(
+  group: Pick<User, "id" | "username">,
+): Promise<{ ok: boolean; output: string }> {
+  const db = getDb();
+  const account = getAccountForUser(db, group.id);
+  if (!account) {
+    return { ok: false, output: "group has no provisioned account" };
+  }
+  const members = listGroupMembers(db, group.id).map((m) => m.username);
+  const script = await readFile(
+    join(SCRIPTS_DIR, "account/ensure-membership.sh"),
+    "utf8",
+  );
+  const res = await runRemote({
+    sshUser: SSH_USER,
+    sshTarget: account.host.ssh_target,
+    script,
+    env: {
+      USERNAME: group.username,
+      KUNGURU_GROUP_MEMBERS: members.join(" "),
+    },
+    timeoutMs: 120_000,
+  });
+  return { ok: res.exitCode === 0, output: res.output };
 }
 
 /**

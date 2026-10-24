@@ -205,9 +205,10 @@ session cookie is now `<base>`-wide, so do these in order:
    once the cookie is `<base>`-wide. Verify with:
    `grep -L kunguru_cookie /etc/nginx/sites-enabled/*` — only `kunguru-users`
    should be listed.
-3. **Recreate the retired proxy alias as an account**: `ops` becomes a group (or
-   user) named `ops`. The migration drops the alias and logs a warning; the
-   hostname works again once `ops` is an account.
+3. **Recreate the retired proxy alias as an account**: create a group named
+   `ops` from the Groups page (it provisions the Linux account, shared home and
+   app slots on the owner's host). The migration drops the alias and logs a
+   warning; the hostname works again once `ops` is an account.
 4. **Move the migrated static site's files**: the migration turns the static
    alias `docs` into a static site for its DB owner, served from
    `/home/<owner>/www/docs`; move the built output there and the source project
