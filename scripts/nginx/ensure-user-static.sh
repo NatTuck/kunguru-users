@@ -192,13 +192,37 @@ while IFS=$'\t' read -r owner label source served; do
     warn "account '${owner}' does not exist on $(hostname); skipping site '${label}'"
     continue
   fi
-  for d in "/home/${owner}/www" "$source" "$served"; do
-    [[ -n "$d" ]] || continue
+  # Create the parent dirs explicitly: `install -d` would create a missing
+  # ~/sites or ~/www as root, leaving root-owned directories in the home.
+  # Source trees are group-writable (a group's members build there); served
+  # docroots stay read-only for the group.
+  for d in "/home/${owner}/sites" "/home/${owner}/www"; do
     if [[ ! -d "$d" ]]; then
-      install -d -m 2750 -o "$owner" -g "$owner" "$d"
+      install -d -m 2770 -o "$owner" -g "$owner" "$d"
       log "created ${d}"
+    elif [[ "$(stat -c %u "$d")" == "0" ]]; then
+      chown "$owner:$owner" "$d"
+      log "fixed ownership: ${d}"
     fi
   done
+  if [[ -n "$source" ]]; then
+    if [[ ! -d "$source" ]]; then
+      install -d -m 2770 -o "$owner" -g "$owner" "$source"
+      log "created ${source}"
+    elif [[ "$(stat -c %u "$source")" == "0" ]]; then
+      chown "$owner:$owner" "$source"
+      log "fixed ownership: ${source}"
+    fi
+  fi
+  if [[ -n "$served" ]]; then
+    if [[ ! -d "$served" ]]; then
+      install -d -m 2750 -o "$owner" -g "$owner" "$served"
+      log "created ${served}"
+    elif [[ "$(stat -c %u "$served")" == "0" ]]; then
+      chown "$owner:$owner" "$served"
+      log "fixed ownership: ${served}"
+    fi
+  fi
   setfacl -m u:www-data:x "/home/${owner}"
   setfacl -m u:www-data:x "/home/${owner}/www"
   setfacl -R -m u:www-data:rX "$served"

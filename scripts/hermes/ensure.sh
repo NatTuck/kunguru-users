@@ -800,6 +800,18 @@ if [[ "$did_update" == "1" && -d "$legacy_venv" ]]; then
   fi
 fi
 
+# --- ownership guard ---
+# The installer/update mix root and user contexts; never leave a root-owned
+# entry in the account's home. The full-home scan is
+# scripts/check-home-ownership.sh; this repairs the paths this script manages.
+for d in "${home}/.hermes/bin" "${home}/.hermes/plugins" \
+         "${home}/.config/systemd/user" "${home}/.local/bin"; do
+  [[ -d "$d" ]] || continue
+  while IFS= read -r -d '' p; do
+    chown "$USERNAME:$USERNAME" "$p" 2>/dev/null || true
+  done < <(find "$d" -xdev -user root -print0 2>/dev/null)
+done
+
 # --- machine-readable convergence markers (parsed by the app for the fleet view) ---
 version_line="$(run_as_user 'hermes --version' 2>/dev/null | head -1 || true)"
 agent_version="$(printf '%s' "$version_line" | grep -oE 'v[0-9][^ ]*' | head -1)"

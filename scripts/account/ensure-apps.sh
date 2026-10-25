@@ -97,13 +97,19 @@ if [[ "${KUNGURU_APPS_DRY_RUN:-0}" == "1" ]]; then
 fi
 
 # Directories. The account (and, for a group, its members) must be able to
-# write; setgid keeps new files in the account's group.
+# write; setgid keeps new files in the account's group. `.config` and
+# `.config/systemd` are listed explicitly: `install -d` creates missing parents
+# as root, which would leave root-owned directories in the account's home.
+# Existing root-owned entries are repaired here too.
 for d in "${home}/.local" "${home}/.local/apps" \
          "${home}/.local/apps/app" "${home}/.local/apps/app-dev" \
-         "$unit_dir"; do
+         "${home}/.config" "${home}/.config/systemd" "$unit_dir"; do
   if [[ ! -d "$d" ]]; then
     install -d -m 2770 -o "$USERNAME" -g "$group" "$d"
     log "created ${d}"
+  elif [[ "$(stat -c %u "$d")" == "0" ]]; then
+    chown "$USERNAME:$group" "$d"
+    log "fixed ownership: ${d}"
   fi
 done
 

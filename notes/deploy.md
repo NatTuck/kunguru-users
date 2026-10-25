@@ -292,7 +292,9 @@ session cookie is now `<base>`-wide, so do these in order:
    - the legacy redirect: `curl -sI https://<user>-agent.users.<base>/` → 301 to
      `<user>-agent.<base>`;
    - `ssh <sshUser>@localhost` works on the gateway (the static reconcile SSHes
-     to the gateway host on every site change).
+     to the gateway host on every site change);
+   - no root-owned entries in any non-root home:
+     `sudo bash scripts/check-home-ownership.sh` on every host (`--fix` repairs).
 
 ### State after the kunguru.net cutover (2026-10-24)
 
