@@ -91,9 +91,8 @@ GET https://users.<base>/login?next=<urlencoded absolute URL>
 - The login page signs the user in, then navigates to the server-validated
   `next` (`window.location.replace(redirectTo)`).
 - `next` is validated server-side: same-origin absolute paths, or a
-  **single-label host under `<base>`** (`<label>.<base>`). During the `.users.`
-  migration window, single-label hosts under `users.<base>` are also allowed.
-  Anything else is rejected (no open redirects).
+  **single-label host under `<base>`** (`<label>.<base>`). Anything else is
+  rejected (no open redirects); the retired `.users.` subtree is not accepted.
 
 ### Required-auth hosts
 
@@ -223,15 +222,14 @@ app.get("/private", (req, res) => {
 
 - **Phase 1** broadens the session cookie to `Domain=<base>`, strips it on every
   upstream vhost except the auth app, injects `Remote-User`/`Remote-Groups`, and
-  adds optional/required behavior to `/internal/auth`. `sanitizeNext` is
-  broadened to accept single-label hosts under `<base>` (and keeps
-  `.users.<base>` during the migration).
+  adds optional/required behavior to `/internal/auth`. `sanitizeNext` accepts
+  single-label hosts under `<base>` only.
 - **Two-port model (implemented)**: the old slots are now app
   `<account>.<base>` (`12000+id`), app-dev `<account>-dev.<base>` (`13000+id`),
   and WebUI `<account>-agent.<base>` (`11000+id`). The `.users.` app subtree is
-  retired: `/internal/auth` resolves those three hosts plus static sites, and
-  the gateway vhost is one wildcard block (`*.<base>`) driven by a
-  host->upstream map.
+  gone (no redirects; those hosts 404): `/internal/auth` resolves those three
+  hosts plus static sites, and the gateway vhost is one wildcard block
+  (`*.<base>`) driven by a host->upstream map.
 - **Static sites (implemented)**: served by nginx on the owner's host; the
   gateway forwards `<label>.<base>` to `<owner-host>:14000` and applies the
   site's `require_auth` gate. Source lives at `~/sites/<label>`; the served
@@ -253,10 +251,8 @@ app.get("/private", (req, res) => {
   is a static site owned by `nat`, `kunguru.net` is an apex site owned by the
   `crow` group, and `snacks` runs in its own group's app slot. See
   `notes/deploy.md` for the deployed state.
-- **Retired `.users.` hosts** get a permanent redirect from the gateway:
-  `<x>-agent.users.<base>` → `<x>-agent.<base>` and `<x>.users.<base>` →
-  `<x>-dev.<base>`. This needs the `*.users.<base>` SAN, so that SAN is retained
-  for now; remove the redirect (and the SAN) once old bookmarks are gone.
+- **Retired `.users.` hosts**: no redirects; the subtree returns 404. The
+  `*.users.<base>` SAN may remain in the certificate but nothing serves it.
 - **Static sites owned on the gateway host** are served from the gateway vhost's
   docroot, not from a loopback listener: a loopback listener would let any local
   process read a `require_auth` site by sending the `Host` header directly.

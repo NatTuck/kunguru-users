@@ -163,13 +163,11 @@ sites never re-issues a certificate.
 ```
 *.kunguru.net          users. (app), llm. (Bifrost), <account>., <account>-dev.,
                        <account>-agent., <label>. (static sites)
-*.users.kunguru.net    only for the retired-host redirect (see below)
+*.users.kunguru.net    legacy SAN only; nothing is served (no redirects)
 ```
 
-The `*.users.<base>` SAN is retained because the gateway serves a permanent
-redirect from the retired `.users.` hosts (`<x>-agent.users.<base>` →
-`<x>-agent.<base>`, `<x>.users.<base>` → `<x>-dev.<base>`). Nothing else needs
-it; drop the redirect and the SAN once old bookmarks are gone.
+The `.users.` subtree is retired: those hosts return 404. The SAN may remain in
+the existing certificate; it is not used by the renderer.
 
 Issued via Joker DNS-01 (needs the per-zone DynDNS credentials file):
 
@@ -289,8 +287,7 @@ session cookie is now `<base>`-wide, so do these in order:
    - `<account>.<base>`, `<account>-dev.<base>`, `<account>-agent.<base>`;
    - a public and a `require_auth` static site, signed out and in;
    - `/internal/auth` for a **disabled** owner's site returns 403;
-   - the legacy redirect: `curl -sI https://<user>-agent.users.<base>/` → 301 to
-     `<user>-agent.<base>`;
+   - `.users.` hosts return 404 (no legacy redirects);
    - `ssh <sshUser>@localhost` works on the gateway (the static reconcile SSHes
      to the gateway host on every site change);
    - no root-owned entries in any non-root home:

@@ -220,8 +220,7 @@ Gateway:
 - Gateway-local owners (the admin `kunguru`) are served directly with a `root`
   block: a loopback listener would let any local process read a `require_auth`
   site by sending the `Host` header directly.
-- A permanent redirect from the retired `.users.` hosts (needs the
-  `*.users.<base>` SAN).
+- No `.users.` redirects: the retired subtree returns 404.
 
 ---
 
@@ -398,14 +397,22 @@ and user unit are retired. `tasks` (4011), `tasks.comms` (4013), `tasks.ops`
 - `ops` → **group named `ops`** (`ops.<base>`, `ops-dev.<base>`); **done**: the
   legacy 4001/4002 vhosts are gone and both instances run in the group's app
   slots on swan.
+- `batcave` → group `batcave` (owner/member `nat`), the old private app, now at
+  `batcave.kunguru.net` behind the group's `require_auth` gate.
+- `ndindaoperations` → group `ndinda-operations` (owner/member `ndinda`), now at
+  `ndinda-operations.kunguru.net`.
 - `writing-hub` → group `writing-hub` (owned by ndinda).
 - `gitbot` → retired; the source was moved to `/home/nat/gitbot` on swan.
 - `tongue-tie-dev` → retired (down).
 - `hours` → an app/group.
 
-**Port/hostname mapping**: public `12000+id` stays `<user>.<base>`; private
-`13000+id` becomes `<user>-dev.<base>`; WebUI `11000+id` becomes
-`<user>-agent.<base>`. Retire `.users.`.
+**Port/hostname mapping**: the default app is `<user>.<base>` (`12000+id`);
+the second slot is a dev variant `<user>-dev.<base>` (`13000+id`); WebUI
+`11000+id` becomes `<user>-agent.<base>`. There is no public/private app
+concept: an account's default app and dev variant are just apps, each with
+optional auth (`require_auth`/`require_auth_dev`), and any **additional** app is
+a separate single-user group (`<app>.<base>`). The `.users.` subtree is gone
+(404, no redirects).
 
 **Auth migration**: two-stage (strip `kunguru_sid` everywhere first, then
 broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
@@ -512,8 +519,8 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
   symlink escape blocked; 5/owner cap; a gateway-local site is served by the
   gateway vhost (no loopback listener); deleting the last site on a host removes
   its listener; a failed host reconcile drops that host's gateway routes.
-- Auth edges: a **disabled** owner's static site is 403 (not just unrouted); the
-  retired `.users.` hosts redirect to the two-port hosts.
+- Auth edges: a **disabled** owner's static site is 403 (not just unrouted);
+  `.users.` hosts return 404.
 - Identity: `Remote-User`/`Remote-Groups` on apps; cookie not visible to
   upstreams; anonymous optional; WebUI/require_auth redirect.
 - Groups (3a): create (≤5), Linux user/group + 2770 home, membership add/remove

@@ -182,19 +182,18 @@ export async function loginHandler(
   const tokenHash = sha256(token);
   insertSession(db, tokenHash, user.id, Date.now() + SESSION_TTL_MS);
   setSessionCookie(res, token);
-  res.json({ user: toPublic(user), redirectTo: sanitizeNext(next, BASE_DOMAIN, PRIVATE_DOMAIN) });
+  res.json({ user: toPublic(user), redirectTo: sanitizeNext(next, BASE_DOMAIN) });
 }
 
 /**
  * Validate a post-login `next` target. Allows same-origin absolute paths and
  * cross-origin URLs only on a single-label host under the base domain
- * (`<label>.<base>`) or, during the `.users.` migration, the legacy private
- * subtree (`<label>.<private>`). Returns null when unsafe.
+ * (`<label>.<base>`). The retired `.users.` subtree is not accepted. Returns
+ * null when unsafe.
  */
 export function sanitizeNext(
   raw: unknown,
   baseDomain: string,
-  privateDomain: string,
 ): string | null {
   if (typeof raw !== "string") return null;
   const value = raw.trim();
@@ -212,15 +211,14 @@ export function sanitizeNext(
   }
   if (url.protocol !== "https:" || url.username || url.password) return null;
   const host = url.hostname.toLowerCase();
-  const domains = [baseDomain, privateDomain]
-    .map((d) => d.trim().toLowerCase())
-    .filter(Boolean);
-  for (const domain of domains) {
+  const domain = baseDomain.trim().toLowerCase();
+  if (domain) {
     const suffix = "." + domain;
-    if (!host.endsWith(suffix)) continue;
-    const label = host.slice(0, -suffix.length);
-    // A single label only: no deeper names, and no empty label.
-    if (label && !label.includes(".")) return url.toString();
+    if (host.endsWith(suffix)) {
+      const label = host.slice(0, -suffix.length);
+      // A single label only: no deeper names, and no empty label.
+      if (label && !label.includes(".")) return url.toString();
+    }
   }
   return null;
 }

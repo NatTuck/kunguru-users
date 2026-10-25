@@ -70,8 +70,8 @@ What runs where:
   `/home/<owner>/www/<label>` — the gateway host's static script runs in
   directories+ACLs mode (`KUNGURU_STATIC_LISTEN=0`) and no `:14000` listener is
   created;
-- `users.<base>`, TLS, certificates, and the retired `.users.` redirect are
-  unchanged.
+- `users.<base>`, TLS, and certificates are unchanged; the retired `.users.`
+  subtree returns 404 (no redirects).
 
 One host is now functional end to end:
 
@@ -194,7 +194,7 @@ Fresh single-host VM/container, with no SSH keys and no WireGuard:
 - app start; create and provision an account;
 - `<account>.<base>`, `<account>-dev.<base>`, `<account>-agent.<base>`;
 - a public and a `require_auth` static site (served by the gateway vhost);
-- a disabled owner returns 403; the `.users.` redirect works; deleting the last
+- a disabled owner returns 403; `.users.` hosts return 404; deleting the last
   site on the host converges; a failed host reconcile drops its routes;
 - `gatewayWgIp` omitted from the instance JSON.
 
