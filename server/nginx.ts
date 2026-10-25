@@ -89,10 +89,11 @@ export async function reconcileUserSites(opts: {
 
   const routes = siteRoutes(accounts, remoteSites);
   const local = localSites.map((s) => ({
-    hostname: staticSiteHost(s.label),
+    hostname: staticSiteHost(s.label, s.apex === 1),
     label: s.label,
     owner: s.owner_name,
     root: s.served_root,
+    apex: s.apex === 1,
   }));
 
   const script = await readFile(
@@ -108,6 +109,8 @@ export async function reconcileUserSites(opts: {
       KUNGURU_ROUTES: JSON.stringify(routes),
       KUNGURU_LOCAL_SITES: JSON.stringify(local),
       KUNGURU_SITES_CERT: SITES_CERT_NAME,
+      // The apex site uses the base-domain certificate, not the wildcard pair.
+      ...(BASE_DOMAIN ? { KUNGURU_APEX_CERT: BASE_DOMAIN } : {}),
       // The auth subrequest target: the app's unix socket when configured,
       // else its loopback TCP address.
       KUNGURU_AUTH_TARGET: config.runtime.authSocket
@@ -175,6 +178,7 @@ export async function reconcileUserStaticSites(): Promise<HostReconcileResult[]>
       owner: s.owner_name,
       source_root: s.source_root,
       served_root: s.served_root,
+      apex: s.apex === 1,
     }));
     const res = await runRemote({
       sshUser: SSH_USER,

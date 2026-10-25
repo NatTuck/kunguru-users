@@ -6,6 +6,7 @@ import ViteExpress from "vite-express";
 import {
   ensureAdminSeed,
   ensureHostSeed,
+  getApexStaticSite,
   getDb,
   getStaticSiteByLabel,
   getUserById,
@@ -17,7 +18,7 @@ import {
   type User,
 } from "./db";
 import { config } from "./config";
-import { hostSeeds } from "./inventory";
+import { BASE_DOMAIN, hostSeeds } from "./inventory";
 import { resolveSession } from "./auth";
 import { resolveHost, type AccountSlot } from "./sites";
 import { getIdentitySigner } from "./identity";
@@ -46,6 +47,19 @@ function resolveAuthTarget(
   db: ReturnType<typeof getDb>,
   host: string | undefined,
 ): AuthTarget | null {
+  // The base domain (and www) is not a `<label>.<base>` host: it belongs to
+  // the apex static site, if one exists.
+  const bare = (host ?? "").split(":")[0].trim().toLowerCase();
+  if (
+    BASE_DOMAIN &&
+    (bare === BASE_DOMAIN.toLowerCase() ||
+      bare === `www.${BASE_DOMAIN.toLowerCase()}`)
+  ) {
+    const site = getApexStaticSite(db);
+    if (!site) return null;
+    const owner = getUserById(db, site.owner_id);
+    return owner ? { kind: "static", site, owner } : null;
+  }
   const match = resolveHost(host);
   if (!match) return null;
   if (match.kind === "account") {

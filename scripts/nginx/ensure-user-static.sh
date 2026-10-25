@@ -48,10 +48,10 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-python3 - "$sites_json" "$bind" "$port" "$allow_list" "$listen" "$tmp" <<'PY'
+python3 - "$sites_json" "$bind" "$port" "$allow_list" "$listen" "$tmp" "$KUNGURU_BASE_DOMAIN" <<'PY'
 import json, os, re, sys
 
-sites_json, bind, port, allow_list, listen, tmp = sys.argv[1:7]
+sites_json, bind, port, allow_list, listen, tmp, base = sys.argv[1:8]
 LABEL = r"[a-z][a-z0-9-]*"
 HOST_RE = re.compile(r"[a-z0-9.-]+")
 # Characters that could break out of an nginx directive or a shell path.
@@ -73,7 +73,10 @@ def valid(s):
     label = str(s.get("label") or "")
     if not re.fullmatch(LABEL, owner) or not re.fullmatch(LABEL, label):
         return False
-    if not HOST_RE.fullmatch(str(s.get("hostname") or "")):
+    host = str(s.get("hostname") or "")
+    if not HOST_RE.fullmatch(host):
+        return False
+    if s.get("apex") and host != base:
         return False
     if not safe_path(str(s.get("served_root") or ""), owner, "www"):
         return False
@@ -126,10 +129,13 @@ if listen == "1":
         "}}\n".format(listen_addr),
     ]
     for s in sites:
+        names = s["hostname"]
+        if s.get("apex"):
+            names = "{} www.{}".format(names, names)
         parts.append(
             "server {{\n"
             "    listen {listen};\n"
-            "    server_name {hostname};\n"
+            "    server_name {names};\n"
             "\n"
             "    root {served};\n"
             "    index index.html index.htm;\n"
@@ -143,7 +149,7 @@ if listen == "1":
             "    location / {{ try_files $uri $uri/index.html =404; }}\n"
             "}}\n".format(
                 listen=listen_addr,
-                hostname=s["hostname"],
+                names=names,
                 served=s["served_root"],
                 allow=allow_lines,
             )

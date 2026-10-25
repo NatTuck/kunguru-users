@@ -207,5 +207,6 @@ export interface StaticSite {
   served_root: string;
   require_auth: number;
   any_authenticated: number;
+  apex: number;
   created_at: string;
 }

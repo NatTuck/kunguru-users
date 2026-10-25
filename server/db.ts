@@ -125,6 +125,7 @@ export const SCHEMA = `
     served_root TEXT NOT NULL,
     require_auth INTEGER NOT NULL DEFAULT 0,
     any_authenticated INTEGER NOT NULL DEFAULT 0,
+    apex INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_static_sites_owner ON static_sites(owner_id);
@@ -235,6 +236,9 @@ function migrate(db: Database.Database): void {
     db.exec(
       "ALTER TABLE static_sites ADD COLUMN any_authenticated INTEGER NOT NULL DEFAULT 0",
     );
+  }
+  if (!scols.some((c) => c.name === "apex")) {
+    db.exec("ALTER TABLE static_sites ADD COLUMN apex INTEGER NOT NULL DEFAULT 0");
   }
   const acols = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
   if (!acols.some((c) => c.name === "bifrost_vk_id")) {
@@ -1029,6 +1033,7 @@ export interface StaticSite {
   served_root: string;
   require_auth: number;
   any_authenticated: number;
+  apex: number;
   created_at: string;
 }
 
@@ -1045,6 +1050,16 @@ export function listStaticSitesForOwner(
   return db
     .prepare("SELECT * FROM static_sites WHERE owner_id = ? ORDER BY label ASC")
     .all(ownerId) as StaticSite[];
+}
+
+// The single site served on the base domain, if any (apex sites are unique by
+// construction: `apex` is only set for the one site created for the base).
+export function getApexStaticSite(
+  db: Database.Database,
+): StaticSite | undefined {
+  return db
+    .prepare("SELECT * FROM static_sites WHERE apex = 1 LIMIT 1")
+    .get() as StaticSite | undefined;
 }
 
 export function getStaticSiteByLabel(
@@ -1084,8 +1099,8 @@ export function createStaticSite(
     .prepare(
       `INSERT INTO static_sites
          (owner_kind, owner_id, label, source_root, served_root, require_auth,
-          any_authenticated)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          any_authenticated, apex)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       site.owner_kind,
@@ -1095,6 +1110,7 @@ export function createStaticSite(
       site.served_root,
       site.require_auth,
       site.any_authenticated,
+      site.apex,
     );
   return { id: Number(info.lastInsertRowid), created_at: new Date().toISOString(), ...site };
 }

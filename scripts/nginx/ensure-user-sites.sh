@@ -40,6 +40,7 @@ set -euo pipefail
 routes_json="${KUNGURU_ROUTES:-[]}"
 local_json="${KUNGURU_LOCAL_SITES:-[]}"
 cert_name="${KUNGURU_SITES_CERT:-kunguru-sites}"
+apex_cert="${KUNGURU_APEX_CERT:-$base}"
 auth_target="${KUNGURU_AUTH_TARGET:-127.0.0.1:3030}"
 
 base="$KUNGURU_BASE_DOMAIN"
@@ -72,10 +73,10 @@ SESSION_MAP
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-python3 - "$routes_json" "$local_json" "$base" "$cert_name" "$auth_target" "$auth_host" "$tmp" <<'PY'
+python3 - "$routes_json" "$local_json" "$base" "$cert_name" "$auth_target" "$auth_host" "$tmp" "$apex_cert" <<'PY'
 import json, os, re, sys
 
-routes_json, local_json, base, cert_name, auth_target, auth_host, tmp = sys.argv[1:8]
+routes_json, local_json, base, cert_name, auth_target, auth_host, tmp, apex_cert = sys.argv[1:9]
 
 # nginx wants `http://host:port/uri` or `http://unix:/path:/uri`.
 if auth_target.startswith("unix:"):
@@ -84,6 +85,7 @@ else:
     auth_pass = "http://{}/internal/auth".format(auth_target)
 webroot = "/var/www/certbot"
 cert_dir = "/etc/letsencrypt/live/" + cert_name
+apex_cert_dir = "/etc/letsencrypt/live/" + apex_cert
 LABEL = r"[a-z][a-z0-9-]*"
 HOST_RE = re.compile(r"[a-z0-9.-]+")
 UPSTREAM_RE = re.compile(r"[A-Za-z0-9.:\[\]]+")
@@ -136,7 +138,7 @@ for s in parse(local_json):
     if not HOST_RE.fullmatch(host):
         print("warning: refusing local site with unsafe hostname: %r" % (s,), file=sys.stderr)
         continue
-    local.append({"hostname": host, "root": root})
+    local.append({"hostname": host, "root": root, "apex": bool(s.get("apex"))})
 
 hosts = sorted({r["hostname"] for r in routes} | {s["hostname"] for s in local})
 
@@ -178,7 +180,7 @@ header = "# Managed by kunguru-users (scripts/nginx/ensure-user-sites.sh).\n"
 http_server = """server {{
     listen 80;
     listen [::]:80;
-    server_name *.{base} *.users.{base};
+    server_name {base} www.{base} *.{base} *.users.{base};
 
     location /.well-known/acme-challenge/ {{ root {webroot}; }}
     location / {{ return 301 https://$host$request_uri; }}
@@ -246,7 +248,7 @@ proxy_body = """    location / {
 """
 
 
-def https_server(names, body):
+def https_server(names, body, cert=None):
     return """server {{
     listen 443 ssl;
     listen [::]:443 ssl;
@@ -264,7 +266,7 @@ def https_server(names, body):
 {body}
 {login}}}
 """.format(
-        names=names, cert_dir=cert_dir, auth=auth_location, body=body, login=login_location
+        names=names, cert_dir=cert or cert_dir, auth=auth_location, body=body, login=login_location
     )
 
 
@@ -282,7 +284,27 @@ def local_body(root):
 
 servers = [https_server("*.{}".format(base), proxy_body)]
 for s in local:
-    servers.append(https_server(s["hostname"], local_body(s["root"])))
+    names = s["hostname"]
+    cert = None
+    if s.get("apex"):
+        names = "{} www.{}".format(base, base)
+        cert = apex_cert_dir
+    servers.append(https_server(names, local_body(s["root"]), cert))
+# A remote apex site (owned on a user server) is forwarded through the map like
+# any routed host, but needs the base-domain certificate and its own server
+# block: the wildcard `*.{base}` does not match the bare domain.
+if any(r["hostname"] in (base, "www.{}".format(base)) for r in routes):
+    if os.path.isfile(os.path.join(apex_cert_dir, "fullchain.pem")) and os.path.isfile(
+        os.path.join(apex_cert_dir, "privkey.pem")
+    ):
+        servers.append(
+            https_server("{} www.{}".format(base, base), proxy_body, apex_cert_dir)
+        )
+    else:
+        print(
+            "warning: no certificate at {}; apex site not rendered".format(apex_cert_dir),
+            file=sys.stderr,
+        )
 servers.append(legacy_server)
 
 open(os.path.join(tmp, "sites-http.conf"), "w").write(header + http_server)

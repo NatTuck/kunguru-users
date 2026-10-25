@@ -1055,6 +1055,7 @@ interface StaticSiteView {
   served_root: string;
   require_auth: number;
   any_authenticated: number;
+  apex: number;
   created_at: string;
 }
 
@@ -1062,7 +1063,7 @@ function siteView(site: StaticSite, ownerName: string): StaticSiteView {
   return {
     ...site,
     owner_name: ownerName,
-    hostname: BASE_DOMAIN ? staticSiteHost(site.label) : "",
+    hostname: BASE_DOMAIN ? staticSiteHost(site.label, site.apex === 1) : "",
   };
 }
 
@@ -1126,9 +1127,18 @@ function siteLabelConflict(
 async function createSiteFor(
   res: Response,
   owner: { id: number; username: string; kind: "user" | "group"; enabled: number },
-  body: { label?: unknown; requireAuth?: unknown; anyAuthenticated?: unknown },
+  body: {
+    label?: unknown;
+    requireAuth?: unknown;
+    anyAuthenticated?: unknown;
+    apex?: unknown;
+  },
 ): Promise<void> {
-  const { label, requireAuth, anyAuthenticated } = body;
+  const { label, requireAuth, anyAuthenticated, apex } = body;
+  if (apex === true && currentUser(res)?.role !== "admin") {
+    res.status(403).json({ error: "only admins may create an apex site" });
+    return;
+  }
   if (!isProvisionableSiteLabel(label)) {
     res.status(400).json({ error: `invalid label: ${LABEL_RULE}` });
     return;
@@ -1168,6 +1178,7 @@ async function createSiteFor(
       served_root: paths.served,
       require_auth: requireAuth === true || anyAuthenticated === true ? 1 : 0,
       any_authenticated: anyAuthenticated === true ? 1 : 0,
+      apex: apex === true ? 1 : 0,
     });
   } catch (err) {
     if (

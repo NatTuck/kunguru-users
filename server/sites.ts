@@ -62,8 +62,10 @@ export function webuiHost(name: string): string {
   return `${name}${AGENT_SUFFIX}.${BASE_DOMAIN}`;
 }
 
-export function staticSiteHost(label: string): string {
-  return `${label}.${BASE_DOMAIN}`;
+// An apex site is served on the base domain itself (and `www.<base>`); the
+// label is then only its unique name and the directory under the owner's home.
+export function staticSiteHost(label: string, apex = false): string {
+  return apex ? BASE_DOMAIN : `${label}.${BASE_DOMAIN}`;
 }
 
 /**
@@ -123,17 +125,21 @@ export function siteRoutes(
   }
   const seen = new Set(routes.map((r) => r.hostname));
   for (const s of staticSites) {
-    const hostname = staticSiteHost(s.label);
-    if (seen.has(hostname)) continue;
-    seen.add(hostname);
-    routes.push({
-      hostname,
-      upstream: `${upstreamHost(s.ssh_target)}:${PORT_STATIC_SITES}`,
-      port: PORT_STATIC_SITES,
-      slot: "static",
-      accountId: s.owner_id,
-      accountName: s.owner_name,
-    });
+    const hostnames = s.apex
+      ? [BASE_DOMAIN, `www.${BASE_DOMAIN}`]
+      : [staticSiteHost(s.label)];
+    for (const hostname of hostnames) {
+      if (seen.has(hostname)) continue;
+      seen.add(hostname);
+      routes.push({
+        hostname,
+        upstream: `${upstreamHost(s.ssh_target)}:${PORT_STATIC_SITES}`,
+        port: PORT_STATIC_SITES,
+        slot: "static",
+        accountId: s.owner_id,
+        accountName: s.owner_name,
+      });
+    }
   }
   return routes;
 }
