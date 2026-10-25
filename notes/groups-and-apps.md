@@ -1,9 +1,8 @@
 # Groups, apps, and static sites — design & implementation plan
 
-Status: **Phases 1, 2a, 2b, 3a and 3b implemented** on `feature/groups` (not
-deployed), including WebUI per-turn identity via a pinned fork patch (see
-`notes/webui-identity.md`). Remaining: per-member WebUI session scoping (a
-product decision), per-group resource limits, and the live migration/cutover.
+Status: **deployed on kunguru.net** (all phases, including the WebUI fork on
+the fleet — see `notes/webui-identity.md`). Remaining: per-member WebUI session
+scoping (a product decision) and per-group resource limits.
 
 Related: `notes/auth-protocol.md`, `notes/deploy.md`,
 `scripts/hermes/ensure.sh`, `scripts/webui/ensure.sh`.
@@ -383,21 +382,25 @@ owner's host.
 
 **Static sites** (pure static): `declutter`, `docs`, `thoughts`, `wireframes`
 (source for `wireframes` not found in ndinda's `~/sites`; ownership unclear).
-`docs` source is ndinda's, DB alias owner `kunguru` — **decided**: `docs` is a
-static site owned by `nat` (provisioned on swan), source `~/sites/docs`, served
-`~/www/docs`; the old basic-auth vhost is disabled and the site is public, as it
-already was through the wildcard.
+`docs` is a static site owned by `nat` (swan), source `~/sites/docs`, served
+`~/www/docs`; `require_auth=1` **and** `any_authenticated=1`, so any signed-in
+`kunguru.net` user can read it. `kunguru.net` itself is an **apex** static site
+(label `apex`) owned by the `crow` group (owner `nat`, members `nat`/`ndinda`),
+served from `/home/crow/www/apex`; the old hand-managed vhost is gone.
 
-**Static + API (apps, not static sites)**: `snacks` (`/api/` 8801), `tasks`
-(4011), `tasks.comms` (4013), `tasks.ops` (4012). `hours.kunguru.net` is a Node
-app (`server.cjs`), not a static site.
+**Static + API**: `snacks` is now the **`snacks` group** (owner `nat`), running
+in its app slot on swan (the app serves `dist/` plus `/api/`); the legacy vhost
+and user unit are retired. `tasks` (4011), `tasks.comms` (4013), `tasks.ops`
+(4012) still run on the gateway. `hours.kunguru.net` is a Node app
+(`server.cjs`), not a static site.
 
 **Apps / groups**:
 - `ops` → **group named `ops`** (`ops.<base>`, `ops-dev.<base>`); **done**: the
   legacy 4001/4002 vhosts are gone and both instances run in the group's app
   slots on swan.
 - `writing-hub` → group `writing-hub` (owned by ndinda).
-- `gitbot`, `tongue-tie-dev` → **retire** (down).
+- `gitbot` → retired; the source was moved to `/home/nat/gitbot` on swan.
+- `tongue-tie-dev` → retired (down).
 - `hours` → an app/group.
 
 **Port/hostname mapping**: public `12000+id` stays `<user>.<base>`; private

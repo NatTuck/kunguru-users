@@ -296,32 +296,44 @@ session cookie is now `<base>`-wide, so do these in order:
    - no root-owned entries in any non-root home:
      `sudo bash scripts/check-home-ownership.sh` on every host (`--fix` repairs).
 
-### State after the kunguru.net cutover (2026-10-24)
+### State after the kunguru.net cutover (2026-10-24, updated 2026-10-25)
 
-- Deployed from `feature/groups`; DB backed up to `data.bak-<timestamp>` and
-  `deploy/kunguru-users.tmpfiles` installed (auth socket
-  `/run/kunguru-users/auth.sock`, dir `2770 kunguru:www-data`).
-- Gateway routes reconciled for every account; `docs.kunguru.net` is a static
-  site owned by `nat` on swan (`~/www/docs`, source `~/sites/docs`).
-- Legacy `ops`/`ops-dev` vhosts were removed after the app moved: both instances
-  now run in the `ops` group's `app`/`app-dev` slots on swan (Node copied to
-  `/home/ops/.local/node`, `server.js` patched to bind `HOST`, DB snapshotted;
-  the old user units are disabled on drongo for rollback). The `ops` group
-  (owner `ndinda`) also has its agent enabled.
-- Fleet WebUI update: 8/8 accounts (7 tenants + `ops`) are on the pinned fork
-  (`b3caae7`). Disable now stops an account's app slots (and their boot
-  enablement) as well as its agent; group enable converges the account again
-  (restoring the slots) and restarts the agent.
+- Deployed from `main` (the feature branch was fast-forwarded); DB backed up to
+  `data.bak-<timestamp>` and `deploy/kunguru-users.tmpfiles` installed (auth
+  socket `/run/kunguru-users/auth.sock`, dir `2770 kunguru:www-data`).
+- `docs.kunguru.net`: static site owned by `nat` on swan, `require_auth=1` and
+  `any_authenticated=1` (any signed-in `<base>` user); source `~/sites/docs`,
+  served `~/www/docs` (`deploy-docs.sh` builds there).
+- `snacks.kunguru.net`: the `snacks` group (owner `nat`) runs the app in its
+  app slot on swan; the app serves `dist/` plus `/api/`, data in
+  `~/.local/snacks`; the legacy vhost and user unit are retired.
+- `kunguru.net`: apex static site (label `apex`) owned by the `crow` group
+  (owner `nat`, members `nat`/`ndinda`), served from `/home/crow/www/apex`
+  (source `/home/crow/sites/apex`) with the base-domain certificate.
+- `ops`/`ops-dev`: the `ops` group's slots on swan; source checkouts at
+  `/home/ops/sites/{ops,ops-dev}.kunguru.net` (prod `main`, dev
+  `active-rewrite`), DBs at `~/.local/share/{ops,ops-dev}/` (moved out of the
+  deploy dir), old units/vhosts disabled.
+- `gitbot`: source moved under `/home/nat/gitbot`; vhost/unit retired.
+- Fleet WebUI update: 8/8 accounts are on the pinned fork (`b3caae7`). Disable
+  stops an account's app slots (and boot enablement) as well as its agent;
+  group enable converges the account again and restarts the agent.
+- Ownership invariant: no root-owned entries in non-root homes;
+  `scripts/check-home-ownership.sh` is the guard (`--fix` repairs) and the
+  provisioning scripts repair the paths they manage.
+- Branch state: `kunguru-users` and ops prod are on `main`; ops dev is on
+  `active-rewrite`; `snacks` and `kunguru.net` are committed on local `main` but
+  **could not be pushed** from drongo (the `github.com-kunguru-net` SSH key is
+  an ops-repo deploy key, and the snacks repo has no HTTPS credentials).
+  `archive/*-2026-10-25` branches hold the pre-normalization state locally.
 - Rollback for the ops move: on drongo re-enable
   `ops.kunguru.net-backend.service` and `ops-dev.kunguru.net-backend.service`
   (`systemctl --user enable --now ...`), re-link their vhosts
   (`ln -s /etc/nginx/sites-available/ops{,-dev}.kunguru.net
   /etc/nginx/sites-enabled/`), reload nginx, and disable the group slots. The
   old trees are intact at `~/sites/ops{,-dev}.kunguru.net`.
-- Existing tenants' WebUIs still run upstream until each account is repaired
-  (the new `ops` group already uses the pinned fork).
-- App slot actions now mean "run it now" / "stop it": `enable` and `disable` map
-  to `systemctl --user enable --now` / `disable --now`.
+- App slot actions mean "run it now" / "stop it": `enable`/`disable` map to
+  `systemctl --user enable --now` / `disable --now`.
 
 ## Upgrading tenant agents (Hermes / XMPP plugin / WebUI)
 

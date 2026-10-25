@@ -237,17 +237,22 @@ app.get("/private", (req, res) => {
   site's `require_auth` gate. Source lives at `~/sites/<label>`; the served
   docroot is `~/www/<label>`. `scripts/nginx/ensure-user-static.sh` renders the
   host listener and fixes directory permissions/ACLs.
+  Auth scopes: public (`require_auth=0`); owner-only (a user's site) or
+  group-members (a group's site); or `any_authenticated=1`, which admits **any
+  signed-in `<base>` user** (used by `docs`, so every tenant can read it).
+  An `apex=1` site is served on the base domain itself (and `www.<base>`) and
+  uses the base-domain certificate, not the wildcard pair; the label is then
+  only its unique name and directory (`kunguru.net` is label `apex`, owned by
+  the `crow` group).
 - **Signed identity (P3)**: `/internal/auth` mints the token; nginx forwards it
   as `X-Kunguru-Identity`; the public key is served at `/api/identity-key` and
   provisioned into the `kunguru-sites` skill. This is additive — apps that
   ignore the token behave exactly as before.
-- **Deployment cutover (not done)**: this branch is not deployed. On a live
-  instance the hand-managed legacy vhosts (`ops`, `ops-dev`, `gitbot`,
-  `tongue-tie-dev`, the `tasks.*` `/api/` locations, the static `docs` vhost)
-  must be removed when the new routes land, since a legacy vhost that proxies
-  without the cookie strip is fail-open once the cookie is `<base>`-wide.
-  `docs` migrates to a static site (the DB migration creates the row; the files
-  move from the gateway docroot to `<owner>~/www/docs`).
+- **Deployment cutover (done on kunguru.net)**: the hand-managed legacy vhosts
+  are gone (kept only where an app still runs, with the cookie strip); `docs`
+  is a static site owned by `nat`, `kunguru.net` is an apex site owned by the
+  `crow` group, and `snacks` runs in its own group's app slot. See
+  `notes/deploy.md` for the deployed state.
 - **Retired `.users.` hosts** get a permanent redirect from the gateway:
   `<x>-agent.users.<base>` → `<x>-agent.<base>` and `<x>.users.<base>` →
   `<x>-dev.<base>`. This needs the `*.users.<base>` SAN, so that SAN is retained
