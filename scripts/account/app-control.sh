@@ -104,7 +104,15 @@ if [[ "$action" == "logs" ]]; then
 fi
 
 unit="${slots[0]}.service"
-if out="$(run_as_user "systemctl --user ${action} '${unit}'" 2>&1)"; then
+# "enable"/"disable" are user actions ("run it now" / "stop it"), not just
+# boot-time symlink changes: --now starts/stops the unit as well.
+case "$action" in
+  enable) systemctl_action="enable --now" ;;
+  disable) systemctl_action="disable --now" ;;
+  restart) systemctl_action="restart" ;;
+  *) systemctl_action="$action" ;;
+esac
+if out="$(run_as_user "systemctl --user ${systemctl_action} '${unit}'" 2>&1)"; then
   rc=0
 else
   rc=$?
