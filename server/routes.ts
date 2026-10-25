@@ -1768,12 +1768,46 @@ api.post("/groups/:id/enable", requireAuth, async (req, res) => {
   const db = getDb();
   setUserEnabled(db, id, true);
   const membership = await ensureGroupMembership(found.access.group);
+  // Disable stops the app slots and the agent; enable converges the account
+  // again (which re-enables and starts the slots) and restarts the agent if it
+  // had one.
+  const account = getAccountForUser(db, id);
+  let provisioning: GroupProvisionResult | null = null;
+  let agentJobId: number | null = null;
+  if (account) {
+    try {
+      provisioning = await provisionGroup({
+        group: found.access.group,
+        hostId: account.host_id,
+        createdBy: currentUser(res)?.id ?? null,
+      });
+    } catch (err) {
+      provisioning = {
+        ok: false,
+        jobId: 0,
+        status: "failed",
+        output: err instanceof Error ? err.message : "provisioning failed",
+      };
+    }
+    if (account.bifrost_vk_id) {
+      try {
+        agentJobId = startGroupAgent({
+          group: found.access.group,
+          createdBy: currentUser(res)?.id ?? null,
+        }).jobId;
+      } catch (err) {
+        console.error(`could not restart the agent for group ${id}:`, err);
+      }
+    }
+  }
   const fresh = getGroupById(db, id);
   const sites = await reconcileSitesSafe();
   res.json({
     group: fresh ? groupViewFrom(db, fresh, found.access.role) : null,
     membership,
     sites,
+    provisioning,
+    agentJobId,
   });
 });
 
