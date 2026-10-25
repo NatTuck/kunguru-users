@@ -302,10 +302,20 @@ session cookie is now `<base>`-wide, so do these in order:
 - Gateway routes reconciled for every account; `docs.kunguru.net` is a static
   site owned by `nat` on swan (`~/www/docs`, source `~/sites/docs`).
 - Legacy `ops`/`ops-dev` vhosts were removed after the app moved: both instances
-  now run in the `ops` group's `app`/`app-dev` slots on swan (Node copied into
-  the group's home, `server.js` patched to bind `HOST`, DB snapshotted; the old
-  user units are disabled on drongo for rollback). The `ops` group (owner
-  `ndinda`) also has its agent enabled.
+  now run in the `ops` group's `app`/`app-dev` slots on swan (Node copied to
+  `/home/ops/.local/node`, `server.js` patched to bind `HOST`, DB snapshotted;
+  the old user units are disabled on drongo for rollback). The `ops` group
+  (owner `ndinda`) also has its agent enabled.
+- Fleet WebUI update: 8/8 accounts (7 tenants + `ops`) are on the pinned fork
+  (`b3caae7`). Disable now stops an account's app slots (and their boot
+  enablement) as well as its agent; group enable converges the account again
+  (restoring the slots) and restarts the agent.
+- Rollback for the ops move: on drongo re-enable
+  `ops.kunguru.net-backend.service` and `ops-dev.kunguru.net-backend.service`
+  (`systemctl --user enable --now ...`), re-link their vhosts
+  (`ln -s /etc/nginx/sites-available/ops{,-dev}.kunguru.net
+  /etc/nginx/sites-enabled/`), reload nginx, and disable the group slots. The
+  old trees are intact at `~/sites/ops{,-dev}.kunguru.net`.
 - Existing tenants' WebUIs still run upstream until each account is repaired
   (the new `ops` group already uses the pinned fork).
 - App slot actions now mean "run it now" / "stop it": `enable` and `disable` map

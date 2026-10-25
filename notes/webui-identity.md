@@ -1,8 +1,8 @@
 # WebUI per-turn identity
 
-Status: **implemented on `feature/groups` plus the WebUI fork; not deployed.**
-The WebUI patch lives on `NatTuck/hermes-webui`, branch
-`kunguru/trusted-user-identity` (draft upstream PR
+Status: **deployed on `feature/groups`; the fleet update is done (all 8 accounts
+on the pinned fork at `b3caae7`).** The WebUI patch lives on
+`NatTuck/hermes-webui`, branch `kunguru/trusted-user-identity` (draft upstream PR
 [nesquena/hermes-webui#8522](https://github.com/nesquena/hermes-webui/pull/8522)).
 The identity hook plugin is installed by `scripts/hermes/ensure.sh` for **group**
 accounts. Per-member session scoping is **not** implemented (see §5).
@@ -97,6 +97,10 @@ a separate phase; the current design is correct either way.
 - Updating the WebUI: rebase the fork branch onto `upstream/master`, push, and
   re-run the webui step (or an agent update). The scripts reset to the branch
   tip and print the deployed commit.
+- Rollout: `POST /api/users/:id/update` converges one account (Hermes + WebUI),
+  `POST /api/users/update` runs the serialized fleet update; progress is at
+  `GET /api/users/update/status`. The 2026-10-24 cutover ran the fleet update:
+  8/8 accounts (7 tenants + the `ops` group) are on `b3caae7`.
 - For a frozen deployment, tag the fork (e.g. `kunguru-2026-10-24`) and set
   `WEBUI_REF` to the tag; the scripts fetch the ref and reset to it.
 - When #8522 merges: set `WEBUI_REPO=https://github.com/nesquena/hermes-webui.git`
