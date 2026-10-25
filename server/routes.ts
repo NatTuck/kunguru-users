@@ -1527,7 +1527,11 @@ api.post("/groups", requireAuth, async (req, res) => {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
-  const { name } = (req.body ?? {}) as { name?: unknown };
+  const { name, owner: ownerName, hostId } = (req.body ?? {}) as {
+    name?: unknown;
+    owner?: unknown;
+    hostId?: unknown;
+  };
   if (!isProvisionableUsername(name)) {
     res.status(400).json({ error: `invalid group name: ${LABEL_RULE}` });
     return;
@@ -1541,22 +1545,60 @@ api.post("/groups", requireAuth, async (req, res) => {
     res.status(409).json({ error: "name collides with a static-site label" });
     return;
   }
-  if (countOwnedGroups(db, user.id) >= GROUP_LIMIT) {
+
+  // An admin may create a group owned by another account, which is how an
+  // account that lives on the user server gets its group (Hermes instances
+  // only run on user servers).
+  let ownerId = user.id;
+  if (ownerName != null && String(ownerName).trim() !== "") {
+    if (user.role !== "admin") {
+      res.status(403).json({ error: "only admins may choose a group owner" });
+      return;
+    }
+    const owner = getUserByUsername(db, String(ownerName).trim());
+    if (!owner || owner.kind !== "user") {
+      res.status(400).json({ error: "owner must be a user account" });
+      return;
+    }
+    if (!owner.enabled) {
+      res.status(400).json({ error: "owner is disabled" });
+      return;
+    }
+    ownerId = owner.id;
+  }
+  if (countOwnedGroups(db, ownerId) >= GROUP_LIMIT) {
     res.status(409).json({ error: `at most ${GROUP_LIMIT} owned groups` });
     return;
   }
-  const ownerAccount = getAccountForUser(db, user.id);
-  if (!ownerAccount || !ownerAccount.host.enabled) {
+
+  const targetHostId = hostId == null ? null : Number(hostId);
+  if (targetHostId != null && !Number.isInteger(targetHostId)) {
+    res.status(400).json({ error: "invalid hostId" });
+    return;
+  }
+  if (targetHostId != null && user.role !== "admin") {
+    res.status(403).json({ error: "only admins may choose a host" });
+    return;
+  }
+  const ownerAccount = getAccountForUser(db, ownerId);
+  const provisionHostId = targetHostId ?? ownerAccount?.host_id ?? null;
+  if (provisionHostId == null) {
     res.status(400).json({
-      error: "provision your own account before creating groups",
+      error: "provision an account before creating groups",
     });
     return;
   }
+  const provisionHost = getHostById(db, provisionHostId);
+  if (!provisionHost || !provisionHost.enabled) {
+    res.status(400).json({ error: "target host not found or disabled" });
+    return;
+  }
+
   let group: User;
   try {
     group = createGroup(db, {
       name,
-      ownerUserId: user.id,
+      ownerUserId: ownerId,
       passwordHash: await hashPassword(generatePassword()),
     });
   } catch (err) {
@@ -1573,7 +1615,7 @@ api.post("/groups", requireAuth, async (req, res) => {
   try {
     provisioning = await provisionGroup({
       group,
-      hostId: ownerAccount.host_id,
+      hostId: provisionHostId,
       createdBy: user.id,
     });
   } catch (err) {
@@ -1586,7 +1628,9 @@ api.post("/groups", requireAuth, async (req, res) => {
   }
   const fresh = getGroupById(db, group.id);
   res.status(201).json({
-    group: fresh ? groupViewFrom(db, fresh, "owner") : null,
+    group: fresh
+      ? groupViewFrom(db, fresh, ownerId === user.id ? "owner" : "admin")
+      : null,
     members: listGroupMembers(db, group.id),
     provisioning,
   });

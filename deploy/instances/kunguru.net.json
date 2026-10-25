@@ -18,5 +18,9 @@
     { "name": "drongo", "role": "admin", "sshTarget": "localhost" },
     { "name": "swan", "role": "user-server", "sshTarget": "10.10.1.2" }
   ],
-  "runtime": { "port": 3030, "host": "127.0.0.1" }
+  "runtime": {
+    "port": 3030,
+    "host": "127.0.0.1",
+    "authSocket": "/run/kunguru-users/auth.sock"
+  }
 }
