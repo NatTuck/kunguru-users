@@ -174,7 +174,7 @@ export async function reconcileUserStaticSites(): Promise<HostReconcileResult[]>
     const { bind, allow } = staticBind(sshTarget);
     const payload = sites.map((s) => ({
       label: s.label,
-      hostname: staticSiteHost(s.label),
+      hostname: staticSiteHost(s.label, s.apex === 1),
       owner: s.owner_name,
       source_root: s.source_root,
       served_root: s.served_root,
