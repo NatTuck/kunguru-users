@@ -160,18 +160,6 @@ map_lines += [
     '    ""      "";',
     "}",
 ]
-# Retired `.users.` hostnames get a permanent redirect to their new home:
-# `<x>-agent.users.` -> `<x>-agent.` (the WebUI slot) and `<x>.users.` ->
-# `<x>-dev.` (the old private app slot is now app-dev). This needs the
-# `*.users.<base>` SAN; drop both once old bookmarks are gone.
-map_lines += [
-    "",
-    "map $host $kunguru_legacy_target {",
-    '    "~^(?<legacy_agent>.+)-agent\\.users\\.{}$" "$legacy_agent-agent.{}";'.format(base, base),
-    '    "~^(?<legacy_name>.+)\\.users\\.{}$" "$legacy_name-dev.{}";'.format(base, base),
-    '    default "";',
-    "}",
-]
 open(os.path.join(tmp, "map.conf"), "w").write("\n".join(map_lines) + "\n")
 open(os.path.join(tmp, "hosts.txt"), "w").write("\n".join(hosts) + ("\n" if hosts else ""))
 
@@ -180,30 +168,12 @@ header = "# Managed by kunguru-users (scripts/nginx/ensure-user-sites.sh).\n"
 http_server = """server {{
     listen 80;
     listen [::]:80;
-    server_name {base} www.{base} *.{base} *.users.{base};
+    server_name {base} www.{base} *.{base};
 
     location /.well-known/acme-challenge/ {{ root {webroot}; }}
     location / {{ return 301 https://$host$request_uri; }}
 }}
 """.format(base=base, webroot=webroot)
-
-# Retired `.users.` hostnames: permanent redirect to the two-port host. Requires
-# the `*.users.<base>` SAN (see scripts/nginx/acme/); remove both once old links
-# are gone.
-legacy_server = """server {{
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    server_name *.users.{base};
-
-    ssl_certificate     {cert_dir}/fullchain.pem;
-    ssl_certificate_key {cert_dir}/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    server_tokens off;
-
-    if ($kunguru_legacy_target = "") {{ return 404; }}
-    return 301 https://$kunguru_legacy_target$request_uri;
-}}
-""".format(base=base, cert_dir=cert_dir)
 
 auth_location = """    location = /__auth {{
         internal;
@@ -305,7 +275,6 @@ if any(r["hostname"] in (base, "www.{}".format(base)) for r in routes):
             "warning: no certificate at {}; apex site not rendered".format(apex_cert_dir),
             file=sys.stderr,
         )
-servers.append(legacy_server)
 
 open(os.path.join(tmp, "sites-http.conf"), "w").write(header + http_server)
 open(os.path.join(tmp, "sites-full.conf"), "w").write(
