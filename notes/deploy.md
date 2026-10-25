@@ -243,20 +243,42 @@ session cookie is now `<base>`-wide, so do these in order:
 
 1. **Back up the DB** before the first start of the new build:
    `cp -a data data.bak-$(date +%F)`.
-2. **Remove the hand-managed legacy vhosts** on the gateway (`ops`, `ops-dev`,
+2. **Handle the hand-managed legacy vhosts** on the gateway (`ops`, `ops-dev`,
    `gitbot`, `tongue-tie-dev`, the `tasks.*` `/api/` locations, the static
    `docs` vhost). Any vhost that proxies without the cookie strip is fail-open
-   once the cookie is `<base>`-wide. Verify with:
+   once the cookie is `<base>`-wide. A vhost that still serves a live app should
+   be kept and given the strip rather than removed:
+
+   ```nginx
+   proxy_set_header Cookie $kunguru_cookie;   # after X-Forwarded-Proto
+   ```
+
+   Remove only vhosts with no listener (`gitbot`, `tongue-tie-dev` did not
+   answer). Verify with:
    `grep -L kunguru_cookie /etc/nginx/sites-enabled/*` — only `kunguru-users`
    should be listed.
 3. **Recreate the retired proxy alias as an account**: create a group named
-   `ops` from the Groups page (it provisions the Linux account, shared home and
-   app slots on the owner's host). The migration drops the alias and logs a
-   warning; the hostname works again once `ops` is an account.
+   `ops` (it provisions the Linux account, shared home and app slots on the
+   owner's host). The migration drops the alias and logs a warning; the hostname
+   works again once `ops` is an account. An admin may create the group for
+   another account (this is how an account that lives on the user server gets
+   its group, since Hermes only runs there):
+
+   ```sh
+   curl -X POST -b "kunguru_sid=$SID" -H 'Content-Type: application/json' \
+     -d '{"name":"ops","owner":"ndinda"}' https://users.<base>/api/groups
+   ```
+
+   The group's app slots (`<group>.<base>`, `<group>-dev.<base>`) are shadowed
+   by the legacy vhosts until the app is moved into them; its WebUI
+   (`<group>-agent.<base>`) is new and routes immediately.
 4. **Move the migrated static site's files**: the migration turns the static
    alias `docs` into a static site for its DB owner, served from
    `/home/<owner>/www/docs`; move the built output there and the source project
-   to `/home/<owner>/sites/docs`.
+   to `/home/<owner>/sites/docs`. Note that a site owned by an account with no
+   host account (e.g. the `kunguru` admin, which is not a tenant) cannot be
+   routed at all — reassign the label to a provisioned account (`nat` owns
+   `docs`) and move the files to that account's host.
 5. Start the new build, then read `data/migration-warnings.log` (also printed to
    the service log) to confirm what the alias migration did.
 6. `pnpm sites-reconcile`; every enabled host should report `[ok]` (this also
@@ -271,6 +293,22 @@ session cookie is now `<base>`-wide, so do these in order:
      `<user>-agent.<base>`;
    - `ssh <sshUser>@localhost` works on the gateway (the static reconcile SSHes
      to the gateway host on every site change).
+
+### State after the kunguru.net cutover (2026-10-24)
+
+- Deployed from `feature/groups`; DB backed up to `data.bak-<timestamp>` and
+  `deploy/kunguru-users.tmpfiles` installed (auth socket
+  `/run/kunguru-users/auth.sock`, dir `2770 kunguru:www-data`).
+- Gateway routes reconciled for every account; `docs.kunguru.net` is a static
+  site owned by `nat` on swan (`~/www/docs`, source `~/sites/docs`).
+- Legacy `ops`/`ops-dev` vhosts still proxy the old app on drongo, now with the
+  cookie strip; `gitbot` and `tongue-tie-dev` vhosts were disabled (no
+  listener). The `ops` group (owner `ndinda`, swan) exists with its agent
+  enabled; its app slots stay shadowed until the old ops app moves into them.
+- Existing tenants' WebUIs still run upstream until each account is repaired
+  (the new `ops` group already uses the pinned fork).
+- App slot actions now mean "run it now" / "stop it": `enable` and `disable` map
+  to `systemctl --user enable --now` / `disable --now`.
 
 ## Upgrading tenant agents (Hermes / XMPP plugin / WebUI)
 

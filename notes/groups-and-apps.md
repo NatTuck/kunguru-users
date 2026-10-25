@@ -383,7 +383,10 @@ owner's host.
 
 **Static sites** (pure static): `declutter`, `docs`, `thoughts`, `wireframes`
 (source for `wireframes` not found in ndinda's `~/sites`; ownership unclear).
-`docs` source is ndinda's, DB alias owner `kunguru` — decide.
+`docs` source is ndinda's, DB alias owner `kunguru` — **decided**: `docs` is a
+static site owned by `nat` (provisioned on swan), source `~/sites/docs`, served
+`~/www/docs`; the old basic-auth vhost is disabled and the site is public, as it
+already was through the wildcard.
 
 **Static + API (apps, not static sites)**: `snacks` (`/api/` 8801), `tasks`
 (4011), `tasks.comms` (4013), `tasks.ops` (4012). `hours.kunguru.net` is a Node
