@@ -301,10 +301,11 @@ session cookie is now `<base>`-wide, so do these in order:
   `/run/kunguru-users/auth.sock`, dir `2770 kunguru:www-data`).
 - Gateway routes reconciled for every account; `docs.kunguru.net` is a static
   site owned by `nat` on swan (`~/www/docs`, source `~/sites/docs`).
-- Legacy `ops`/`ops-dev` vhosts still proxy the old app on drongo, now with the
-  cookie strip; `gitbot` and `tongue-tie-dev` vhosts were disabled (no
-  listener). The `ops` group (owner `ndinda`, swan) exists with its agent
-  enabled; its app slots stay shadowed until the old ops app moves into them.
+- Legacy `ops`/`ops-dev` vhosts were removed after the app moved: both instances
+  now run in the `ops` group's `app`/`app-dev` slots on swan (Node copied into
+  the group's home, `server.js` patched to bind `HOST`, DB snapshotted; the old
+  user units are disabled on drongo for rollback). The `ops` group (owner
+  `ndinda`) also has its agent enabled.
 - Existing tenants' WebUIs still run upstream until each account is repaired
   (the new `ops` group already uses the pinned fork).
 - App slot actions now mean "run it now" / "stop it": `enable` and `disable` map

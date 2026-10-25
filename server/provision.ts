@@ -48,6 +48,7 @@ import {
 import { getIdentitySigner } from "./identity";
 import { runRemote } from "./transport/run";
 import { reconcileSites } from "./nginx";
+import { APP_SLOTS, controlApp } from "./apps";
 
 export const STANDARD_ACCOUNT_PROFILE = "standard-account";
 // Lean standardize/upgrade: force the agent to the stable channel, update it,
@@ -1057,6 +1058,22 @@ export async function deactivateUserAccess(opts: {
     await setVirtualKeyActive(account.bifrost_vk_id, false).catch(() => undefined);
   }
   if (account) {
+    // A disabled account must not keep serving its app slots. `disable` also
+    // drops the boot enablement, so a host reboot cannot bring them back.
+    for (const slot of APP_SLOTS) {
+      try {
+        await controlApp(
+          { username: opts.user.username, ssh_target: account.host.ssh_target },
+          slot,
+          "disable",
+        );
+      } catch (err) {
+        console.error(
+          `could not stop the ${slot} slot for ${opts.user.username}:`,
+          err,
+        );
+      }
+    }
     const step: StepRuntime = {
       def: { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
       host: account.host,

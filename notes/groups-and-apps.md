@@ -393,8 +393,9 @@ already was through the wildcard.
 app (`server.cjs`), not a static site.
 
 **Apps / groups**:
-- `ops` → **group named `ops`** (`ops.<base>`, `ops-dev.<base>`); retire the
-  legacy 4001 vhost/alias; move the app to the group's app slot.
+- `ops` → **group named `ops`** (`ops.<base>`, `ops-dev.<base>`); **done**: the
+  legacy 4001/4002 vhosts are gone and both instances run in the group's app
+  slots on swan.
 - `writing-hub` → group `writing-hub` (owned by ndinda).
 - `gitbot`, `tongue-tie-dev` → **retire** (down).
 - `hours` → an app/group.
