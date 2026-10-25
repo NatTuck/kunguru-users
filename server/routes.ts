@@ -31,6 +31,7 @@ import {
   removeGroupMember,
   setGroupOwner,
   setStaticSiteRequireAuth,
+  setStaticSiteAnyAuthenticated,
   setUserEnabled,
   setUserRole,
   toAdminRows,
@@ -1053,6 +1054,7 @@ interface StaticSiteView {
   source_root: string;
   served_root: string;
   require_auth: number;
+  any_authenticated: number;
   created_at: string;
 }
 
@@ -1124,9 +1126,9 @@ function siteLabelConflict(
 async function createSiteFor(
   res: Response,
   owner: { id: number; username: string; kind: "user" | "group"; enabled: number },
-  body: { label?: unknown; requireAuth?: unknown },
+  body: { label?: unknown; requireAuth?: unknown; anyAuthenticated?: unknown },
 ): Promise<void> {
-  const { label, requireAuth } = body;
+  const { label, requireAuth, anyAuthenticated } = body;
   if (!isProvisionableSiteLabel(label)) {
     res.status(400).json({ error: `invalid label: ${LABEL_RULE}` });
     return;
@@ -1164,7 +1166,8 @@ async function createSiteFor(
       label,
       source_root: paths.source,
       served_root: paths.served,
-      require_auth: requireAuth === true ? 1 : 0,
+      require_auth: requireAuth === true || anyAuthenticated === true ? 1 : 0,
+      any_authenticated: anyAuthenticated === true ? 1 : 0,
     });
   } catch (err) {
     if (
@@ -1240,9 +1243,20 @@ api.patch("/static-sites/:id", requireAuth, async (req, res) => {
     res.status(400).json({ error: "invalid id" });
     return;
   }
-  const { requireAuth: required } = (req.body ?? {}) as { requireAuth?: unknown };
-  if (typeof required !== "boolean") {
+  const { requireAuth: required, anyAuthenticated } = (req.body ?? {}) as {
+    requireAuth?: unknown;
+    anyAuthenticated?: unknown;
+  };
+  if (required !== undefined && typeof required !== "boolean") {
     res.status(400).json({ error: "requireAuth must be a boolean" });
+    return;
+  }
+  if (anyAuthenticated !== undefined && typeof anyAuthenticated !== "boolean") {
+    res.status(400).json({ error: "anyAuthenticated must be a boolean" });
+    return;
+  }
+  if (required === undefined && anyAuthenticated === undefined) {
+    res.status(400).json({ error: "requireAuth or anyAuthenticated is required" });
     return;
   }
   const db = getDb();
@@ -1255,11 +1269,15 @@ api.patch("/static-sites/:id", requireAuth, async (req, res) => {
     res.status(403).json({ error: "forbidden" });
     return;
   }
-  setStaticSiteRequireAuth(db, id, required);
+  if (typeof required === "boolean") setStaticSiteRequireAuth(db, id, required);
+  if (typeof anyAuthenticated === "boolean") {
+    setStaticSiteAnyAuthenticated(db, id, anyAuthenticated);
+  }
+  const fresh = getStaticSiteById(db, id) as StaticSite;
   const owner = getUserById(db, site.owner_id);
   const sites = await reconcileSitesSafe();
   res.json({
-    site: siteView({ ...site, require_auth: required ? 1 : 0 }, owner?.username ?? ""),
+    site: siteView(fresh, owner?.username ?? ""),
     sites,
   });
 });

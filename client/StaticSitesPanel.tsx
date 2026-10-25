@@ -101,6 +101,11 @@ export default function StaticSitesPanel({
   const setAuth = (id: number, requireAuth: boolean) =>
     mutate(() => patch<MutationReply>(`/api/static-sites/${id}`, { requireAuth }));
 
+  const setAnyAuth = (id: number, anyAuthenticated: boolean) =>
+    mutate(() =>
+      patch<MutationReply>(`/api/static-sites/${id}`, { anyAuthenticated }),
+    );
+
   const atLimit = sites != null && sites.length >= limit;
 
   return (
@@ -148,7 +153,13 @@ export default function StaticSitesPanel({
                         <Mono>{s.label}</Mono>
                       )}
                       <StatusChip
-                        label={s.require_auth ? "login required" : "public"}
+                        label={
+                          s.require_auth
+                            ? s.any_authenticated
+                              ? "login required (any user)"
+                              : "login required"
+                            : "public"
+                        }
                         tone={s.require_auth ? "accent" : "neutral"}
                       />
                     </div>
@@ -167,6 +178,20 @@ export default function StaticSitesPanel({
                         onPress={() => void setAuth(s.id, !s.require_auth)}
                       >
                         {s.require_auth ? "Make public" : "Require login"}
+                      </Button>
+                    )}
+                    {canManage && s.require_auth && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        isDisabled={busy}
+                        onPress={() =>
+                          void setAnyAuth(s.id, !s.any_authenticated)
+                        }
+                      >
+                        {s.any_authenticated
+                          ? "Owner/members only"
+                          : "Any signed-in user"}
                       </Button>
                     )}
                     {canManage && confirming === s.id ? (

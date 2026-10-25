@@ -124,6 +124,7 @@ export const SCHEMA = `
     source_root TEXT NOT NULL,
     served_root TEXT NOT NULL,
     require_auth INTEGER NOT NULL DEFAULT 0,
+    any_authenticated INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_static_sites_owner ON static_sites(owner_id);
@@ -228,6 +229,12 @@ function migrate(db: Database.Database): void {
   }
   if (!ucols.some((c) => c.name === "require_auth_dev")) {
     db.exec("ALTER TABLE users ADD COLUMN require_auth_dev INTEGER NOT NULL DEFAULT 0");
+  }
+  const scols = db.prepare("PRAGMA table_info(static_sites)").all() as { name: string }[];
+  if (!scols.some((c) => c.name === "any_authenticated")) {
+    db.exec(
+      "ALTER TABLE static_sites ADD COLUMN any_authenticated INTEGER NOT NULL DEFAULT 0",
+    );
   }
   const acols = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
   if (!acols.some((c) => c.name === "bifrost_vk_id")) {
@@ -1021,6 +1028,7 @@ export interface StaticSite {
   source_root: string;
   served_root: string;
   require_auth: number;
+  any_authenticated: number;
   created_at: string;
 }
 
@@ -1075,8 +1083,9 @@ export function createStaticSite(
   const info = db
     .prepare(
       `INSERT INTO static_sites
-         (owner_kind, owner_id, label, source_root, served_root, require_auth)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+         (owner_kind, owner_id, label, source_root, served_root, require_auth,
+          any_authenticated)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       site.owner_kind,
@@ -1085,6 +1094,7 @@ export function createStaticSite(
       site.source_root,
       site.served_root,
       site.require_auth,
+      site.any_authenticated,
     );
   return { id: Number(info.lastInsertRowid), created_at: new Date().toISOString(), ...site };
 }
@@ -1094,9 +1104,34 @@ export function setStaticSiteRequireAuth(
   id: number,
   requireAuth: boolean,
 ): boolean {
-  const info = db
-    .prepare("UPDATE static_sites SET require_auth = ? WHERE id = ?")
-    .run(requireAuth ? 1 : 0, id);
+  // Going public also drops the any-authenticated scope: it is meaningless
+  // without an auth check.
+  const info = requireAuth
+    ? db.prepare("UPDATE static_sites SET require_auth = 1 WHERE id = ?").run(id)
+    : db
+        .prepare(
+          "UPDATE static_sites SET require_auth = 0, any_authenticated = 0 WHERE id = ?",
+        )
+        .run(id);
+  return info.changes > 0;
+}
+
+// "Any signed-in user" (rather than only the owner/group members) implies the
+// auth check, so setting it also turns require_auth on.
+export function setStaticSiteAnyAuthenticated(
+  db: Database.Database,
+  id: number,
+  anyAuthenticated: boolean,
+): boolean {
+  const info = anyAuthenticated
+    ? db
+        .prepare(
+          "UPDATE static_sites SET any_authenticated = 1, require_auth = 1 WHERE id = ?",
+        )
+        .run(id)
+    : db
+        .prepare("UPDATE static_sites SET any_authenticated = 0 WHERE id = ?")
+        .run(id);
   return info.changes > 0;
 }
 

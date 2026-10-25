@@ -206,5 +206,6 @@ export interface StaticSite {
   source_root: string;
   served_root: string;
   require_auth: number;
+  any_authenticated: number;
   created_at: string;
 }

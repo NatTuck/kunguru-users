@@ -77,13 +77,15 @@ function targetRequiresAuth(target: AuthTarget): boolean {
 }
 
 // Whether the signed-in user may use the host. Groups are shared: any member
-// may. Users and user-owned sites are self-only.
+// may. Users and user-owned sites are self-only, unless a site opts into
+// "any signed-in user" (`any_authenticated`), which docs-style sites use.
 function targetAllows(
   db: ReturnType<typeof getDb>,
   target: AuthTarget,
   userId: number,
 ): boolean {
   if (target.kind === "static") {
+    if (target.site.any_authenticated === 1) return true;
     return target.owner.kind === "group"
       ? isGroupMember(db, target.owner.id, userId)
       : target.owner.id === userId;
