@@ -1508,10 +1508,8 @@ api.get("/agent/apps", agentAuth, async (_req, res) => {
 });
 
 api.post("/agent/apps/:slot", agentAuth, async (req, res) => {
-  const { slot, action } = (req.body ?? {}) as {
-    slot?: unknown;
-    action?: unknown;
-  };
+  const { action } = (req.body ?? {}) as { action?: unknown };
+  const slot = req.params.slot;
   if (!isAppSlot(slot)) {
     res.status(400).json({ error: "slot must be 'app' or 'app-dev'" });
     return;
