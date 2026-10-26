@@ -93,7 +93,7 @@ fi
 # toggle "on"). A first-time enable uses the full `ensure` instead.
 if [[ "$action" == "start" ]]; then
   echo "[ok] starting hermes webui for ${USERNAME}"
-  run_as_user 'systemctl --user start hermes-webui' || exit 1
+  run_as_user 'systemctl --user enable --now hermes-webui' || exit 1
   exit 0
 fi
 
