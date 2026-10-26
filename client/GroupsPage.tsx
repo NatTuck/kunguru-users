@@ -46,6 +46,7 @@ export default function GroupsPage() {
     enable,
     provision,
     startAgent,
+    setAgent,
     agentJobFor,
     message,
     clearActionError,
@@ -214,7 +215,12 @@ export default function GroupsPage() {
                       tone={g.role === "owner" ? "accent" : "neutral"}
                     />
                     {!g.enabled && <StatusChip label="disabled" tone="danger" />}
-                    {g.agent && <StatusChip label="agent" tone="success" />}
+                    {g.agent && (
+                      <StatusChip
+                        label={g.agent_enabled ? "agent on" : "agent off"}
+                        tone={g.agent_enabled ? "success" : "neutral"}
+                      />
+                    )}
                     {!g.provisioned ? (
                       <StatusChip label="not provisioned" tone="warning" />
                     ) : g.status === "active" ? (
@@ -285,9 +291,23 @@ export default function GroupsPage() {
                       size="sm"
                       variant="outline"
                       isDisabled={busy || !g.provisioned}
+                      onPress={() => void setAgent(g.id, !g.agent_enabled)}
+                    >
+                      {g.agent_enabled
+                        ? "Stop agent"
+                        : g.agent
+                          ? "Start agent"
+                          : "Enable agent"}
+                    </Button>
+                  )}
+                  {isOwner && g.agent && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      isDisabled={busy}
                       onPress={() => void startAgent(g.id)}
                     >
-                      {g.agent ? "Update agent" : "Enable agent"}
+                      Update agent
                     </Button>
                   )}
                   {isOwner && g.agent && (

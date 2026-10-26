@@ -67,6 +67,10 @@ export interface Account {
   agent_channel: string | null;
   agent_version: string | null;
   venv_kind: string | null;
+  // Group agent toggle (default off) and the hash of the per-account app-ops
+  // token an agent presents as `Authorization: Bearer …`.
+  agent_enabled: number;
+  agent_token_hash: string | null;
 }
 
 export interface JobRow {
@@ -181,6 +185,8 @@ export const SCHEMA = `
     agent_channel TEXT,
     agent_version TEXT,
     venv_kind TEXT,
+    agent_enabled INTEGER NOT NULL DEFAULT 0,
+    agent_token_hash TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (user_id, host_id)
   );
@@ -252,6 +258,12 @@ function migrate(db: Database.Database): void {
   }
   if (!acols.some((c) => c.name === "agent_version")) {
     db.exec("ALTER TABLE accounts ADD COLUMN agent_version TEXT");
+  }
+  if (!acols.some((c) => c.name === "agent_enabled")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN agent_enabled INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!acols.some((c) => c.name === "agent_token_hash")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN agent_token_hash TEXT");
   }
   if (!acols.some((c) => c.name === "venv_kind")) {
     db.exec("ALTER TABLE accounts ADD COLUMN venv_kind TEXT");
@@ -946,6 +958,8 @@ export function createAccount(
     agent_channel: null,
     agent_version: null,
     venv_kind: null,
+    agent_enabled: 0,
+    agent_token_hash: null,
   };
 }
 
@@ -968,6 +982,37 @@ export function setAccountVkId(
   vkId: string | null,
 ): void {
   db.prepare("UPDATE accounts SET bifrost_vk_id = ? WHERE id = ?").run(vkId, accountId);
+}
+
+export function setAccountAgentEnabled(
+  db: Database.Database,
+  accountId: number,
+  enabled: boolean,
+): void {
+  db.prepare("UPDATE accounts SET agent_enabled = ? WHERE id = ?").run(
+    enabled ? 1 : 0,
+    accountId,
+  );
+}
+
+export function setAccountAgentTokenHash(
+  db: Database.Database,
+  accountId: number,
+  hash: string | null,
+): void {
+  db.prepare("UPDATE accounts SET agent_token_hash = ? WHERE id = ?").run(
+    hash,
+    accountId,
+  );
+}
+
+export function getAccountByAgentTokenHash(
+  db: Database.Database,
+  hash: string,
+): Account | undefined {
+  return db
+    .prepare("SELECT * FROM accounts WHERE agent_token_hash = ?")
+    .get(hash) as Account | undefined;
 }
 
 export function setAccountModel(

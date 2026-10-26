@@ -22,6 +22,7 @@ export default function AdminGroupsPage() {
     disable,
     enable,
     startAgent,
+    setAgent,
     agentJobFor,
     clearActionError,
   } = useGroupsStore();
@@ -102,7 +103,12 @@ export default function AdminGroupsPage() {
                     tone="accent"
                   />
                   {!g.enabled && <StatusChip label="disabled" tone="danger" />}
-                  {g.agent && <StatusChip label="agent" tone="success" />}
+                  {g.agent && (
+                    <StatusChip
+                      label={g.agent_enabled ? "agent on" : "agent off"}
+                      tone={g.agent_enabled ? "success" : "neutral"}
+                    />
+                  )}
                   {!g.provisioned ? (
                     <StatusChip label="not provisioned" tone="warning" />
                   ) : g.status === "active" ? (
@@ -121,10 +127,24 @@ export default function AdminGroupsPage() {
                     size="sm"
                     variant="outline"
                     isDisabled={busy || !g.provisioned}
-                    onPress={() => void startAgent(g.id)}
+                    onPress={() => void setAgent(g.id, !g.agent_enabled)}
                   >
-                    Agent
+                    {g.agent_enabled
+                      ? "Stop agent"
+                      : g.agent
+                        ? "Start agent"
+                        : "Enable agent"}
                   </Button>
+                  {g.agent && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      isDisabled={busy}
+                      onPress={() => void startAgent(g.id)}
+                    >
+                      Update
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"

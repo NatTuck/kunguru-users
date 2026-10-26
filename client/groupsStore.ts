@@ -42,6 +42,7 @@ interface GroupsState {
   loadAdmin: () => Promise<void>;
   transfer: (id: number, username: string) => Promise<CommandResult | null>;
   startAgent: (id: number) => Promise<number | null>;
+  setAgent: (id: number, enabled: boolean) => Promise<number | null>;
   closeAgentJob: () => void;
   message: (id: number, username: string, message: string) => Promise<CommandResult | null>;
   clearActionError: () => void;
@@ -275,6 +276,32 @@ export const useGroupsStore = create<GroupsState>((set, getState) => ({
       return data.jobId;
     } catch (err) {
       set({ busy: false, agentJobFor: null, actionError: await message(err, "could not start the agent") });
+      return null;
+    }
+  },
+
+  // Toggle the group agent (off by default). Enabling an unconfigured group
+  // lazily configures it on the first run; later toggles only start/stop.
+  setAgent: async (id, enabled) => {
+    set({ busy: true, actionError: null, agentJobFor: id, agentJob: null });
+    try {
+      const data = await post<{ jobId: number }>(`/api/groups/${id}/agent`, {
+        enabled,
+      });
+      set({ busy: false });
+      pollAgentJob(id, data.jobId);
+      await getState().load();
+      await getState().loadAdmin();
+      return data.jobId;
+    } catch (err) {
+      set({
+        busy: false,
+        agentJobFor: null,
+        actionError: await message(
+          err,
+          enabled ? "could not start the agent" : "could not stop the agent",
+        ),
+      });
       return null;
     }
   },

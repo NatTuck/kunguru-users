@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -17,7 +18,9 @@ import {
   getUserById,
   listActiveAccountUsers,
   listGroupMembers,
+  setAccountAgentEnabled,
   setAccountAgentInfo,
+  setAccountAgentTokenHash,
   setAccountModel,
   setAccountStatus,
   setAccountVkId,
@@ -70,6 +73,9 @@ export const GROUP_ACCOUNT_PROFILE = "group-account";
 // the group home), the WebUI pinned to the root profile, and the SOUL.md
 // roster. Slow (first Hermes install), so it runs as a background job.
 export const GROUP_HERMES_PROFILE = "group-hermes";
+// Group-agent toggle for an already-configured agent (no reconfiguration).
+export const GROUP_AGENT_START_PROFILE = "group-agent-start";
+export const GROUP_AGENT_STOP_PROFILE = "group-agent-stop";
 
 type StepTarget = "user-host" | "snikket-host";
 
@@ -109,6 +115,9 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
   [GROUP_ACCOUNT_PROFILE]: [
     { name: "linux-group", scriptRel: "account/ensure-group.sh", target: "user-host" },
     { name: "app-slots", scriptRel: "account/ensure-apps.sh", target: "user-host" },
+    // The per-account app-ops token (readable by the group's members, so the
+    // owner's personal agent can operate the app while the group agent is off).
+    { name: "agent-token", scriptRel: "account/ensure-agent-token.sh", target: "user-host" },
   ],
   [GROUP_HERMES_PROFILE]: [
     { name: "snikket-agent-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
@@ -117,6 +126,16 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
     { name: "soul", scriptRel: "hermes/ensure-soul.sh", target: "user-host" },
   ],
   [AGENT_UPDATE_PROFILE]: [
+    { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
+    { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
+  ],
+  // Group-agent toggle: start/stop an already-configured agent. The scripts'
+  // early start/stop branches skip reconfiguration.
+  [GROUP_AGENT_START_PROFILE]: [
+    { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
+    { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
+  ],
+  [GROUP_AGENT_STOP_PROFILE]: [
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
     { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
   ],
@@ -169,6 +188,10 @@ interface RunJobOpts {
   update?: boolean;
   // Optional extra env exported to every step (e.g. HERMES_ACTION=stop).
   action?: string;
+  // Per-account app-ops token, written to the account's home by the
+  // `agent-token` step (never persisted in plaintext by the app).
+  agentToken?: string;
+  agentApiUrl?: string;
   // Account kind (user | group). A group's hermes step installs the
   // shared-session identity hook plugin; a user's does not.
   accountKind?: "user" | "group";
@@ -270,6 +293,10 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
       }
       if (s.def.name === "hermes-model") {
         env.HERMES_MODEL = opts.model ?? HERMES_MODEL;
+      }
+      if (s.def.name === "agent-token") {
+        env.AGENT_TOKEN = opts.agentToken ?? "";
+        env.AGENT_API_URL = opts.agentApiUrl ?? "";
       }
       if (s.def.name === "soul") {
         env.KUNGURU_GROUP_MEMBERS = (opts.groupMembers ?? []).join(" ");
@@ -502,6 +529,16 @@ export async function provisionGroup(opts: {
   let account = getAccountByUserHost(db, opts.group.id, host.id);
   if (!account) account = createAccount(db, opts.group.id, host.id);
 
+  // Mint the app-ops token on every converge: the plaintext only ever lives in
+  // the account's `~/.config/kunguru-agent.env` (0640 owner:group).
+  const agentToken = randomBytes(32).toString("base64url");
+  setAccountAgentTokenHash(
+    db,
+    account.id,
+    createHash("sha256").update(agentToken).digest("hex"),
+  );
+  const agentApiUrl = PRIVATE_DOMAIN ? `https://${PRIVATE_DOMAIN}` : "";
+
   const jobId = createJob(db, {
     hostId: host.id,
     profile: GROUP_ACCOUNT_PROFILE,
@@ -518,6 +555,8 @@ export async function provisionGroup(opts: {
     jobHostId: host.id,
     jobId,
     steps,
+    agentToken,
+    agentApiUrl,
   });
   setAccountStatus(
     db,
@@ -641,10 +680,68 @@ export function startGroupAgent(opts: {
     createdBy: opts.createdBy,
   }).id;
   inFlight.add(opts.group.id);
+  setAccountAgentEnabled(db, account.id, true);
   void runGroupAgent(db, opts.group, account, host, opts.createdBy, jobId)
     .catch((err) => console.error(`group-hermes job ${jobId} failed:`, err))
     .finally(() => inFlight.delete(opts.group.id));
   return { jobId };
+}
+
+// Start/stop the already-configured group agent (toggle). The hermes/webui
+// scripts have early start/stop branches, so this does not reconfigure.
+function groupAgentServices(
+  opts: { group: Pick<User, "id" | "username">; createdBy: number | null },
+  action: "start" | "stop",
+): { jobId: number } {
+  const db = getDb();
+  const account = getAccountForUser(db, opts.group.id);
+  if (!account) throw new Error("group has no provisioned account");
+  if (account.status !== "active") throw new Error("group account is not active");
+  if (!account.bifrost_vk_id) {
+    throw new Error("group agent is not configured; enable it first");
+  }
+  const host = getHostById(db, account.host_id);
+  if (!host) throw new Error("host not found");
+  if (inFlight.has(opts.group.id)) {
+    throw new Error("a provisioning run is already in progress for this group");
+  }
+  const profile =
+    action === "start" ? GROUP_AGENT_START_PROFILE : GROUP_AGENT_STOP_PROFILE;
+  const jobId = createJob(db, {
+    hostId: host.id,
+    profile,
+    createdBy: opts.createdBy,
+  }).id;
+  inFlight.add(opts.group.id);
+  void runJob({
+    user: opts.group,
+    createdBy: opts.createdBy,
+    profile,
+    jobHostId: host.id,
+    jobId,
+    steps: PROFILES[profile].map((def) => ({ def, host })),
+    accountKind: "group",
+    action,
+    model: account.hermes_model ?? undefined,
+  })
+    .catch((err) => console.error(`group-agent ${action} job ${jobId} failed:`, err))
+    .finally(() => inFlight.delete(opts.group.id));
+  setAccountAgentEnabled(db, account.id, action === "start");
+  return { jobId };
+}
+
+export function startGroupAgentServices(opts: {
+  group: Pick<User, "id" | "username">;
+  createdBy: number | null;
+}): { jobId: number } {
+  return groupAgentServices(opts, "start");
+}
+
+export function stopGroupAgentServices(opts: {
+  group: Pick<User, "id" | "username">;
+  createdBy: number | null;
+}): { jobId: number } {
+  return groupAgentServices(opts, "stop");
 }
 
 async function runGroupAgent(
@@ -1074,17 +1171,17 @@ export async function deactivateUserAccess(opts: {
         );
       }
     }
-    const step: StepRuntime = {
-      def: { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
-      host: account.host,
-    };
+    const steps: StepRuntime[] = [
+      { def: { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" }, host: account.host },
+      { def: { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" }, host: account.host },
+    ];
     await runJob({
       user: opts.user,
       password: "",
       createdBy: opts.createdBy,
-      profile: "hermes-stop",
+      profile: "agent-stop",
       jobHostId: account.host_id,
-      steps: [step],
+      steps,
       action: "stop",
     });
   }

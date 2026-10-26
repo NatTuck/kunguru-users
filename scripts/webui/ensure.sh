@@ -89,6 +89,14 @@ if [[ "$action" == "stop" ]]; then
   exit 0
 fi
 
+# Start an already-configured WebUI without re-converging it (group-agent
+# toggle "on"). A first-time enable uses the full `ensure` instead.
+if [[ "$action" == "start" ]]; then
+  echo "[ok] starting hermes webui for ${USERNAME}"
+  run_as_user 'systemctl --user start hermes-webui' || exit 1
+  exit 0
+fi
+
 : "${WEBUI_PORT:?missing required env: WEBUI_PORT}"
 webui_host="${WEBUI_HOST:-127.0.0.1}"
 webui_proxies="${WEBUI_TRUSTED_PROXIES:-127.0.0.1/32}"

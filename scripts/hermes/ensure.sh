@@ -153,6 +153,16 @@ if [[ "$action" == "stop" ]]; then
   exit 0
 fi
 
+# Start an already-configured agent without re-running the configuration
+# (the group-agent toggle's "on" path). The unit must exist; a first-time
+# enable uses the full `ensure` instead.
+if [[ "$action" == "start" ]]; then
+  echo "[ok] starting hermes gateway for ${USERNAME}"
+  run_as_user 'systemctl --user enable --now hermes-gateway' || exit 1
+  run_as_user 'systemctl --user enable --now hermes-xmpp-watchdog.timer' >/dev/null 2>&1 || true
+  exit 0
+fi
+
 # --- lingering user manager (gateway must survive logout/reboot) ---
 loginctl enable-linger "$USERNAME"
 for _ in $(seq 1 20); do

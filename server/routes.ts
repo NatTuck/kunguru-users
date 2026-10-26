@@ -1,4 +1,5 @@
-import { Router, type Response } from "express";
+import { createHash } from "node:crypto";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import {
   addGroupMember,
   countAdmins,
@@ -10,6 +11,7 @@ import {
   deleteSessionsForUser,
   deleteStaticSite,
   generatePassword,
+  getAccountByAgentTokenHash,
   getAccountForUser,
   getDb,
   getGroupById,
@@ -36,6 +38,7 @@ import {
   setUserRole,
   toAdminRows,
   updateUserPasswordHash,
+  type Account,
   type GroupRow,
   type Host,
   type Role,
@@ -62,6 +65,8 @@ import {
   provisionGroup,
   sendGroupAgentMessage,
   startGroupAgent,
+  startGroupAgentServices,
+  stopGroupAgentServices,
   syncSnikketPassword,
   applyUserModel,
   type GroupProvisionResult,
@@ -1440,6 +1445,126 @@ api.get("/accounts/:id/apps/:slot/logs", requireAuth, async (req, res) => {
   }
 });
 
+interface AgentContext {
+  account: Account;
+  user: User;
+  host: Host;
+}
+
+// Agent-facing app operations. A per-account bearer token (written to the
+// account's ~/.config/kunguru-agent.env by the agent-token step) is scoped to
+// that account's app slots only. It is not a session and cannot reach /api.
+function agentAuth(req: Request, res: Response, next: NextFunction): void {
+  const header = req.headers.authorization;
+  const token =
+    typeof header === "string" && header.startsWith("Bearer ")
+      ? header.slice(7).trim()
+      : "";
+  if (!token) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const db = getDb();
+  const account = getAccountByAgentTokenHash(
+    db,
+    createHash("sha256").update(token).digest("hex"),
+  );
+  if (!account) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const user = getUserById(db, account.user_id);
+  const host = getHostById(db, account.host_id);
+  if (
+    !user ||
+    !user.enabled ||
+    account.status !== "active" ||
+    !host ||
+    !host.enabled
+  ) {
+    res.status(403).json({ error: "account is not active" });
+    return;
+  }
+  res.locals.agent = { account, user, host } as AgentContext;
+  next();
+}
+
+api.get("/agent/apps", agentAuth, async (_req, res) => {
+  const { user, host } = res.locals.agent as AgentContext;
+  try {
+    const status = await getAppStatus({
+      username: user.username,
+      ssh_target: host.ssh_target,
+    });
+    res.json({
+      account: { id: user.id, username: user.username, kind: user.kind },
+      ...status,
+    });
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "could not read app status",
+    });
+  }
+});
+
+api.post("/agent/apps/:slot", agentAuth, async (req, res) => {
+  const { slot, action } = (req.body ?? {}) as {
+    slot?: unknown;
+    action?: unknown;
+  };
+  if (!isAppSlot(slot)) {
+    res.status(400).json({ error: "slot must be 'app' or 'app-dev'" });
+    return;
+  }
+  if (!isAppAction(action)) {
+    res.status(400).json({ error: "action must be enable, disable, or restart" });
+    return;
+  }
+  const { user, host } = res.locals.agent as AgentContext;
+  const target = { username: user.username, ssh_target: host.ssh_target };
+  try {
+    const result = await controlApp(target, slot, action);
+    let status = null;
+    try {
+      status = await getAppStatus(target);
+    } catch {
+      status = null;
+    }
+    res.json({ ok: result.ok, output: result.output, ...(status ?? {}) });
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "app control failed",
+    });
+  }
+});
+
+api.get("/agent/apps/:slot/logs", agentAuth, async (req, res) => {
+  if (!isAppSlot(req.params.slot)) {
+    res.status(400).json({ error: "slot must be 'app' or 'app-dev'" });
+    return;
+  }
+  const rawLines = Array.isArray(req.query.lines)
+    ? req.query.lines[0]
+    : req.query.lines;
+  const lines =
+    typeof rawLines === "string" && /^[0-9]+$/.test(rawLines)
+      ? Math.min(2000, Math.max(1, Number(rawLines)))
+      : 200;
+  const { user, host } = res.locals.agent as AgentContext;
+  try {
+    const result = await getAppLogs(
+      { username: user.username, ssh_target: host.ssh_target },
+      req.params.slot,
+      lines,
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : "could not read app logs",
+    });
+  }
+});
+
 // --- Groups (accounts shared by members) ---
 //
 // A group is an account (users.kind='group') with an owner and members. The
@@ -1461,6 +1586,7 @@ interface GroupView {
   host: string | null;
   status: "pending" | "active" | "failed" | null;
   agent: boolean;
+  agent_enabled: number;
 }
 
 function groupView(db: ReturnType<typeof getDb>, row: GroupRow): GroupView {
@@ -1477,6 +1603,7 @@ function groupView(db: ReturnType<typeof getDb>, row: GroupRow): GroupView {
     host: account?.host.name ?? null,
     status: account?.status ?? null,
     agent: !!account?.bifrost_vk_id,
+    agent_enabled: account?.agent_enabled ?? 0,
   };
 }
 
@@ -1500,6 +1627,7 @@ function groupViewFrom(
     host: account?.host.name ?? null,
     status: account?.status ?? null,
     agent: !!account?.bifrost_vk_id,
+    agent_enabled: account?.agent_enabled ?? 0,
   };
 }
 
@@ -1818,12 +1946,17 @@ api.post("/groups/:id/enable", requireAuth, async (req, res) => {
         output: err instanceof Error ? err.message : "provisioning failed",
       };
     }
-    if (account.bifrost_vk_id) {
+    if (account.agent_enabled === 1) {
       try {
-        agentJobId = startGroupAgent({
-          group: found.access.group,
-          createdBy: currentUser(res)?.id ?? null,
-        }).jobId;
+        agentJobId = account.bifrost_vk_id
+          ? startGroupAgentServices({
+              group: found.access.group,
+              createdBy: currentUser(res)?.id ?? null,
+            }).jobId
+          : startGroupAgent({
+              group: found.access.group,
+              createdBy: currentUser(res)?.id ?? null,
+            }).jobId;
       } catch (err) {
         console.error(`could not restart the agent for group ${id}:`, err);
       }
@@ -1887,6 +2020,50 @@ api.post("/groups/:id/provision", requireAuth, async (req, res) => {
 
 // Provision (or re-run) the group's agent. Heavy, so it is a background job;
 // the caller polls GET /api/jobs/:id.
+// Toggle the group's agent. Off by default. Enabling an unconfigured group
+// lazily runs the full group-hermes profile (first enable is slow); once
+// configured, the toggle only starts/stops the gateway and WebUI.
+api.post("/groups/:id/agent", requireAuth, (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const found = groupAccess(res, id, { manage: true });
+  if ("error" in found) {
+    res.status(found.status).json({ error: found.error });
+    return;
+  }
+  const { enabled } = (req.body ?? {}) as { enabled?: unknown };
+  if (typeof enabled !== "boolean") {
+    res.status(400).json({ error: "enabled must be a boolean" });
+    return;
+  }
+  const db = getDb();
+  const account = getAccountForUser(db, id);
+  if (!account) {
+    res.status(400).json({ error: "group has no provisioned account" });
+    return;
+  }
+  const createdBy = currentUser(res)?.id ?? null;
+  try {
+    const { jobId } = enabled
+      ? account.bifrost_vk_id
+        ? startGroupAgentServices({ group: found.access.group, createdBy })
+        : startGroupAgent({ group: found.access.group, createdBy })
+      : stopGroupAgentServices({ group: found.access.group, createdBy });
+    const fresh = getGroupById(db, id);
+    res.json({
+      jobId,
+      group: fresh ? groupViewFrom(db, fresh, found.access.role) : null,
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : "could not toggle the agent",
+    });
+  }
+});
+
 api.post("/groups/:id/hermes", requireAuth, (req, res) => {
   const id = parseId(req.params.id);
   if (id == null) {
