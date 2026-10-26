@@ -242,6 +242,12 @@ app.get("/private", (req, res) => {
   uses the base-domain certificate, not the wildcard pair; the label is then
   only its unique name and directory (`kunguru.net` is label `apex`, owned by
   the `crow` group).
+- **Agent app-ops token**: a separate bearer surface (`/api/agent/...`), not a
+  session. Each account gets a random token at group provisioning/re-provision;
+  only its sha256 is stored and the plaintext lives in
+  `~/.config/kunguru-agent.env` (0640 owner:group, so a group's owner can let
+  their personal agent use it). It is scoped to that account's app slots
+  (status/restart/enable/disable/logs) and nothing else.
 - **Signed identity (P3)**: `/internal/auth` mints the token; nginx forwards it
   as `X-Kunguru-Identity`; the public key is served at `/api/identity-key` and
   provisioned into the `kunguru-sites` skill. This is additive — apps that

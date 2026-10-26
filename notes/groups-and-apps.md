@@ -538,3 +538,28 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
   the announcements; a 1:1 user WebUI is unchanged.
 - Limits: 5 groups/user, 5 static sites/owner; capacity errors.
 - `pnpm check` (tsc + check-config) and a build.
+
+## Group agent toggle and app-ops token
+
+- **Off by default.** Every group account has `accounts.agent_enabled`
+  (default 0). Enabling is lazy: the first toggle-on runs the full
+  `group-hermes` profile (agent XMPP account, Hermes, WebUI, SOUL) and starts
+  the gateway + WebUI. Once configured, the toggle only starts/stops
+  (`group-agent-start` / `group-agent-stop`; the `hermes`/`webui` scripts have
+  early `start`/`stop` branches, so no reconfiguration). The group view exposes
+  `agent` (configured) and `agent_enabled`; the Groups and admin Groups pages
+  have the toggle (`POST /api/groups/:id/agent {enabled}`).
+- Disabling the group stops the agent (gateway + WebUI) but keeps
+  `agent_enabled`; enabling the group restarts it only when the toggle is on.
+- **App-ops token.** Each account (group creation/re-provision) mints a random
+  bearer token; only its sha256 is stored (`accounts.agent_token_hash`). The
+  plaintext is written by `account/ensure-agent-token.sh` to
+  `~/.config/kunguru-agent.env` (0640 owner:group) with `KUNGURU_AGENT_TOKEN`
+  and `KUNGURU_API_URL`. For a group the group is the group's Linux group, so
+  the owner's **personal** agent (a group member) can read it and operate the
+  group's app even while the group's own agent is off.
+- **API**: `GET /api/agent/apps` (status), `POST /api/agent/apps/:slot`
+  (`{"action":"restart"|"enable"|"disable"}`), `GET
+  /api/agent/apps/:slot/logs?lines=N`, all with `Authorization: Bearer …`.
+  Scoped to the token's account's app slots; it is not a session and cannot
+  reach the rest of `/api`. Disabled/inactive accounts get 403.

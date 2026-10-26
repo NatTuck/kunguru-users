@@ -331,6 +331,11 @@ session cookie is now `<base>`-wide, so do these in order:
   old trees are intact at `~/sites/ops{,-dev}.kunguru.net`.
 - App slot actions mean "run it now" / "stop it": `enable`/`disable` map to
   `systemctl --user enable --now` / `disable --now`.
+- Group agents are togglable and **off by default**: `accounts.agent_enabled`
+  (0), lazy first enable, then start/stop of gateway + WebUI. Each account also
+  has an app-ops bearer token (`~/.config/kunguru-agent.env`, 0640 group) for
+  `GET/POST /api/agent/apps…`; the owner's personal agent can operate a group's
+  app while the group agent is off.
 
 ## Upgrading tenant agents (Hermes / XMPP plugin / WebUI)
 
