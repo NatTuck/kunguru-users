@@ -75,6 +75,7 @@ export const GROUP_ACCOUNT_PROFILE = "group-account";
 export const GROUP_HERMES_PROFILE = "group-hermes";
 // Group-agent toggle for an already-configured agent (no reconfiguration).
 export const GROUP_AGENT_START_PROFILE = "group-agent-start";
+export const AGENT_TOKEN_PROFILE = "agent-token";
 export const GROUP_AGENT_STOP_PROFILE = "group-agent-stop";
 
 type StepTarget = "user-host" | "snikket-host";
@@ -101,6 +102,7 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
     // The two app slots (code dirs + user units) are per account, not per
     // service: install them as soon as the Linux account exists.
     { name: "app-slots", scriptRel: "account/ensure-apps.sh", target: "user-host" },
+    { name: "agent-token", scriptRel: "account/ensure-agent-token.sh", target: "user-host" },
     { name: "snikket-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
     { name: "snikket-agent-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
@@ -138,6 +140,10 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
   [GROUP_AGENT_STOP_PROFILE]: [
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
     { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
+  ],
+  // Mint/rewrite only the per-account app-ops token (existing accounts).
+  [AGENT_TOKEN_PROFILE]: [
+    { name: "agent-token", scriptRel: "account/ensure-agent-token.sh", target: "user-host" },
   ],
 };
 
@@ -434,6 +440,41 @@ export function startStandardAccountProvision(opts: {
 }
 
 /**
+ * Mint/rewrite only the per-account app-ops token (for accounts provisioned
+ * before the token step existed). Fast; runs inline.
+ */
+export async function issueAgentToken(opts: {
+  user: Pick<User, "id" | "username">;
+  createdBy: number | null;
+}): Promise<{ ok: boolean; jobId: number; output: string }> {
+  const db = getDb();
+  const account = getAccountForUser(db, opts.user.id);
+  if (!account) throw new Error("account is not provisioned");
+  const host = getHostById(db, account.host_id);
+  if (!host || !host.enabled) throw new Error("host not found or disabled");
+  const { agentToken, agentApiUrl } = mintAgentToken(db, account.id);
+  const jobId = createJob(db, {
+    hostId: host.id,
+    profile: AGENT_TOKEN_PROFILE,
+    createdBy: opts.createdBy,
+  }).id;
+  const result = await runJob({
+    user: opts.user,
+    createdBy: opts.createdBy,
+    profile: AGENT_TOKEN_PROFILE,
+    jobHostId: host.id,
+    jobId,
+    steps: PROFILES[AGENT_TOKEN_PROFILE].map((def) => ({ def, host })),
+    agentToken,
+    agentApiUrl,
+  });
+  const output = getJobSteps(db, result.jobId)
+    .map((s) => `[${s.script}]\n${(s.output_log ?? "").trim()}`)
+    .join("\n");
+  return { ok: result.status === "succeeded", jobId: result.jobId, output };
+}
+
+/**
  * Background body of a standard-account run. Never throws: an unexpected
  * failure marks the (pre-created) job failed so polling observers terminate,
  * and the account failed so the UI offers Repair.
@@ -452,6 +493,7 @@ async function runStandardAccountProvision(opts: {
 }): Promise<void> {
   const db = getDb();
   let vk: { id: string; value: string } | null = null;
+  const { agentToken, agentApiUrl } = mintAgentToken(db, opts.accountId);
   try {
     vk = await issueVirtualKey(opts.user.username);
     const result = await runJob({
@@ -465,6 +507,8 @@ async function runStandardAccountProvision(opts: {
       steps: opts.steps,
       model: opts.model,
       llm: { apiKey: vk.value },
+      agentToken,
+      agentApiUrl,
       agent: {
         username: agentUsername(opts.user.username),
         password: generatePassword(),
@@ -503,6 +547,24 @@ async function runStandardAccountProvision(opts: {
   }
 }
 
+// Mint the per-account app-ops token: only its hash is stored; the plaintext
+// is written to the account's home by the agent-token step.
+function mintAgentToken(
+  db: ReturnType<typeof getDb>,
+  accountId: number,
+): { agentToken: string; agentApiUrl: string } {
+  const agentToken = randomBytes(32).toString("base64url");
+  setAccountAgentTokenHash(
+    db,
+    accountId,
+    createHash("sha256").update(agentToken).digest("hex"),
+  );
+  return {
+    agentToken,
+    agentApiUrl: PRIVATE_DOMAIN ? `https://${PRIVATE_DOMAIN}` : "",
+  };
+}
+
 export interface GroupProvisionResult {
   ok: boolean;
   jobId: number;
@@ -531,13 +593,7 @@ export async function provisionGroup(opts: {
 
   // Mint the app-ops token on every converge: the plaintext only ever lives in
   // the account's `~/.config/kunguru-agent.env` (0640 owner:group).
-  const agentToken = randomBytes(32).toString("base64url");
-  setAccountAgentTokenHash(
-    db,
-    account.id,
-    createHash("sha256").update(agentToken).digest("hex"),
-  );
-  const agentApiUrl = PRIVATE_DOMAIN ? `https://${PRIVATE_DOMAIN}` : "";
+  const { agentToken, agentApiUrl } = mintAgentToken(db, account.id);
 
   const jobId = createJob(db, {
     hostId: host.id,

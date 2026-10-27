@@ -583,7 +583,7 @@ cat > "$tmp_skill" <<'KUNGURU_SITES_SKILL'
 ---
 name: kunguru-sites
 description: "Deploy and host web apps and static sites for a kunguru tenant. The gateway nginx, TLS, DNS, and the user-server static nginx are managed centrally; you run your app on the app or app-dev port, or publish static files into ~/www/<label>."
-version: 1.2.0
+version: 1.3.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
@@ -710,33 +710,49 @@ operator can also add it). Do not run your own nginx or per-site vhosts.
 
 ## Managing apps and sites via the API
 
-If `~/.config/kunguru-agent.env` exists (group accounts always have it; the
-group is group-readable, so the owner's personal agent can manage the group's
-app), it contains:
+`~/.config/kunguru-agent.env` (0640 owner:group) contains:
 
 ```
 KUNGURU_AGENT_TOKEN=...
 KUNGURU_API_URL=https://users.<base>
 ```
 
-Send `Authorization: Bearer $KUNGURU_AGENT_TOKEN` to:
+User and group accounts get this at provisioning (an operator can reissue it).
+A **user** token acts on the user's own account and every group the user
+belongs to; a **group** token acts only on that group. For a group the file is
+group-readable, so the owner's personal agent can use it too.
 
-- `GET  $KUNGURU_API_URL/api/agent/apps` — app slot status;
-- `POST $KUNGURU_API_URL/api/agent/apps/app` with `{"action":"restart"}`
-  (or `enable` / `disable`) — app slot control;
-- `GET  $KUNGURU_API_URL/api/agent/apps/app/logs?lines=100` — recent logs;
-- `GET  $KUNGURU_API_URL/api/agent/sites` — list this account's static sites;
-- `POST $KUNGURU_API_URL/api/agent/sites` with
+Discover what you can manage:
+
+- `GET $KUNGURU_API_URL/api/agent/accounts` — the user's own account plus each
+  group they belong to: role (self/owner/member), host, app / app-dev / WebUI
+  hostnames and ports, static-site count, and (for groups) whether the agent is
+  configured/enabled. A group token returns just that group.
+
+Pass `?account=<id|username>` to choose one (it defaults to your own account):
+
+- `GET  $KUNGURU_API_URL/api/agent/apps?account=ops` — slot status;
+- `POST $KUNGURU_API_URL/api/agent/apps/app?account=ops` with
+  `{"action":"restart"}` (or `enable` / `disable`);
+- `GET  $KUNGURU_API_URL/api/agent/apps/app/logs?account=ops&lines=100`;
+- `GET  $KUNGURU_API_URL/api/agent/sites?account=ops` — that account's sites;
+- `POST $KUNGURU_API_URL/api/agent/sites?account=ops` with
   `{"label":"<label>","requireAuth":false}` — create a static site (also
   creates `~/sites/<label>`, `~/www/<label>`, and the nginx route);
-- `PATCH $KUNGURU_API_URL/api/agent/sites/<id>` with `{"requireAuth":true}`
-  or `{"anyAuthenticated":true}` — change the site's auth scope;
-- `DELETE $KUNGURU_API_URL/api/agent/sites/<id>` — remove the route (files are
-  kept).
+- `PATCH $KUNGURU_API_URL/api/agent/sites/<id>` with `{"requireAuth":true}` or
+  `{"anyAuthenticated":true}`; `DELETE .../api/agent/sites/<id>` — the site's
+  owner must be one of your accounts.
 
-The token is scoped to this account's app slots and sites; it is not a login
-session and cannot manage accounts. Apex sites (the base domain) are admin-only
-and cannot be created with this token.
+Create a new group app (a **user** token only):
+
+- `POST $KUNGURU_API_URL/api/agent/groups` with `{"name":"<name>"}` — creates a
+  group owned by the user, provisioned on the user's host (the group's agent is
+  off by default). Then use `?account=<name>` for its app/sites.
+
+Send `Authorization: Bearer $KUNGURU_AGENT_TOKEN` on every call. The token is
+scoped to the accounts above; it is not a login session and cannot manage
+accounts. Apex sites (the base domain) are admin-only and cannot be created
+with this token.
 
 ## TLS, certificates, DNS
 

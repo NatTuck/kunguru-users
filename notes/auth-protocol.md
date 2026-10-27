@@ -246,9 +246,11 @@ app.get("/private", (req, res) => {
   session. Each account gets a random token at group provisioning/re-provision;
   only its sha256 is stored and the plaintext lives in
   `~/.config/kunguru-agent.env` (0640 owner:group, so a group's owner can let
-  their personal agent use it). It is scoped to that account's app slots
-  (status/restart/enable/disable/logs) and static sites
-  (list/create/patch/delete); nothing else.
+  their personal agent use it). A user token is scoped to the user's own account
+  and every group the user belongs to; a group token only to that group. It
+  covers app slots (status/restart/enable/disable/logs), static sites
+  (list/create/patch/delete), account discovery (`GET /api/agent/accounts`), and
+  — user tokens only — group creation (`POST /api/agent/groups`); nothing else.
 - **Signed identity (P3)**: `/internal/auth` mints the token; nginx forwards it
   as `X-Kunguru-Identity`; the public key is served at `/api/identity-key` and
   provisioned into the `kunguru-sites` skill. This is additive — apps that

@@ -58,6 +58,7 @@ import {
   deactivateUserAccess,
   ensureGroupMembership,
   getFleetUpdateState,
+  issueAgentToken,
   sendAgentXmppMessage,
   startAgentUpdate,
   startFleetAgentUpdate,
@@ -74,10 +75,14 @@ import {
 } from "./provision";
 import {
   LABEL_RULE,
+  appDevHost,
+  appHost,
   isProvisionableSiteLabel,
   isProvisionableUsername,
+  servicePort,
   sitePaths,
   staticSiteHost,
+  webuiHost,
 } from "./sites";
 import {
   APP_SLOTS,
@@ -1445,15 +1450,25 @@ api.get("/accounts/:id/apps/:slot/logs", requireAuth, async (req, res) => {
   }
 });
 
-interface AgentContext {
+interface AgentTarget {
   account: Account;
   user: User;
   host: Host;
+  /** self = the token's own account; owner/member = a group it may act on. */
+  role: "self" | "owner" | "member";
 }
 
-// Agent-facing app operations. A per-account bearer token (written to the
-// account's ~/.config/kunguru-agent.env by the agent-token step) is scoped to
-// that account's app slots only. It is not a session and cannot reach /api.
+interface AgentContext {
+  tokenAccount: Account;
+  tokenUser: User;
+  targets: AgentTarget[];
+}
+
+// Agent-facing app/site operations. A per-account bearer token (written to the
+// account's ~/.config/kunguru-agent.env by the agent-token step) identifies an
+// account. A *user* token may act on the user's own account and every group the
+// user belongs to (`?account=<id|username>` selects one); a *group* token may
+// act only on that group. It is not a session and cannot reach the rest of /api.
 function agentAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
   const token =
@@ -1465,39 +1480,151 @@ function agentAuth(req: Request, res: Response, next: NextFunction): void {
     return;
   }
   const db = getDb();
-  const account = getAccountByAgentTokenHash(
+  const tokenAccount = getAccountByAgentTokenHash(
     db,
     createHash("sha256").update(token).digest("hex"),
   );
-  if (!account) {
+  if (!tokenAccount) {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
-  const user = getUserById(db, account.user_id);
-  const host = getHostById(db, account.host_id);
+  const tokenUser = getUserById(db, tokenAccount.user_id);
+  const tokenHost = getHostById(db, tokenAccount.host_id);
   if (
-    !user ||
-    !user.enabled ||
-    account.status !== "active" ||
-    !host ||
-    !host.enabled
+    !tokenUser ||
+    !tokenUser.enabled ||
+    tokenAccount.status !== "active" ||
+    !tokenHost ||
+    !tokenHost.enabled
   ) {
     res.status(403).json({ error: "account is not active" });
     return;
   }
-  res.locals.agent = { account, user, host } as AgentContext;
+
+  const targets: AgentTarget[] = [];
+  const add = (
+    account: Account | undefined,
+    user: User | undefined,
+    host: Host | undefined,
+    role: AgentTarget["role"],
+  ): void => {
+    if (
+      !account ||
+      !user ||
+      !host ||
+      !host.enabled ||
+      account.status !== "active" ||
+      !user.enabled
+    ) {
+      return;
+    }
+    if (targets.some((t) => t.user.id === user.id)) return;
+    targets.push({ account, user, host, role });
+  };
+  add(tokenAccount, tokenUser, tokenHost, "self");
+  if (tokenUser.kind === "user") {
+    for (const group of listGroupsForUser(db, tokenUser.id)) {
+      const groupUser = getUserById(db, group.id);
+      const account = getAccountForUser(db, group.id);
+      const host = account ? getHostById(db, account.host_id) : undefined;
+      add(
+        account,
+        groupUser,
+        host,
+        group.owner_user_id === tokenUser.id ? "owner" : "member",
+      );
+    }
+  }
+  res.locals.agent = { tokenAccount, tokenUser, targets } as AgentContext;
   next();
 }
 
-api.get("/agent/apps", agentAuth, async (_req, res) => {
-  const { user, host } = res.locals.agent as AgentContext;
+// The account an operation targets: `?account=<id|username>`, defaulting to the
+// token's own account.
+function agentTargetFor(req: Request, res: Response): AgentTarget | null {
+  const ctx = res.locals.agent as AgentContext;
+  const raw = req.query.account;
+  if (raw === undefined || raw === "") return ctx.targets[0] ?? null;
+  const sel = String(raw).trim();
+  const byId = Number(sel);
+  return (
+    ctx.targets.find(
+      (t) =>
+        (Number.isInteger(byId) && t.user.id === byId) ||
+        t.user.username === sel,
+    ) ?? null
+  );
+}
+
+function agentAccountView(
+  db: ReturnType<typeof getDb>,
+  t: AgentTarget,
+): Record<string, unknown> {
+  const u = t.user;
+  const view: Record<string, unknown> = {
+    id: u.id,
+    username: u.username,
+    kind: u.kind,
+    role: t.role,
+    host: t.host.name,
+    app: {
+      hostname: appHost(u.username),
+      port: servicePort("app", u.id),
+      require_auth: u.require_auth,
+    },
+    app_dev: {
+      hostname: appDevHost(u.username),
+      port: servicePort("app-dev", u.id),
+      require_auth: u.require_auth_dev,
+    },
+    webui: {
+      hostname: webuiHost(u.username),
+      port: servicePort("hermes-webui", u.id),
+    },
+    sites: countStaticSitesForOwner(db, u.id),
+  };
+  if (u.kind === "group") {
+    view.agent = {
+      configured: !!t.account.bifrost_vk_id,
+      enabled: t.account.agent_enabled === 1,
+    };
+  }
+  return view;
+}
+
+function agentSiteTarget(res: Response, site: StaticSite): AgentTarget | null {
+  const ctx = res.locals.agent as AgentContext;
+  return (
+    ctx.targets.find(
+      (t) => t.user.id === site.owner_id && t.user.kind === site.owner_kind,
+    ) ?? null
+  );
+}
+
+api.get("/agent/accounts", agentAuth, (_req, res) => {
+  const ctx = res.locals.agent as AgentContext;
+  const db = getDb();
+  res.json({ accounts: ctx.targets.map((t) => agentAccountView(db, t)) });
+});
+
+api.get("/agent/apps", agentAuth, async (req, res) => {
+  const target = agentTargetFor(req, res);
+  if (!target) {
+    res.status(404).json({ error: "account not found" });
+    return;
+  }
   try {
     const status = await getAppStatus({
-      username: user.username,
-      ssh_target: host.ssh_target,
+      username: target.user.username,
+      ssh_target: target.host.ssh_target,
     });
     res.json({
-      account: { id: user.id, username: user.username, kind: user.kind },
+      account: {
+        id: target.user.id,
+        username: target.user.username,
+        kind: target.user.kind,
+        role: target.role,
+      },
       ...status,
     });
   } catch (err) {
@@ -1518,13 +1645,17 @@ api.post("/agent/apps/:slot", agentAuth, async (req, res) => {
     res.status(400).json({ error: "action must be enable, disable, or restart" });
     return;
   }
-  const { user, host } = res.locals.agent as AgentContext;
-  const target = { username: user.username, ssh_target: host.ssh_target };
+  const target = agentTargetFor(req, res);
+  if (!target) {
+    res.status(404).json({ error: "account not found" });
+    return;
+  }
+  const t = { username: target.user.username, ssh_target: target.host.ssh_target };
   try {
-    const result = await controlApp(target, slot, action);
+    const result = await controlApp(t, slot, action);
     let status = null;
     try {
-      status = await getAppStatus(target);
+      status = await getAppStatus(t);
     } catch {
       status = null;
     }
@@ -1548,10 +1679,14 @@ api.get("/agent/apps/:slot/logs", agentAuth, async (req, res) => {
     typeof rawLines === "string" && /^[0-9]+$/.test(rawLines)
       ? Math.min(2000, Math.max(1, Number(rawLines)))
       : 200;
-  const { user, host } = res.locals.agent as AgentContext;
+  const target = agentTargetFor(req, res);
+  if (!target) {
+    res.status(404).json({ error: "account not found" });
+    return;
+  }
   try {
     const result = await getAppLogs(
-      { username: user.username, ssh_target: host.ssh_target },
+      { username: target.user.username, ssh_target: target.host.ssh_target },
       req.params.slot,
       lines,
     );
@@ -1563,28 +1698,34 @@ api.get("/agent/apps/:slot/logs", agentAuth, async (req, res) => {
   }
 });
 
-// Agent-facing static-site management for the token's account. The account is
-// the site owner (a user, or a group whose members can read the token file).
-api.get("/agent/sites", agentAuth, (_req, res) => {
-  const { user } = res.locals.agent as AgentContext;
+api.get("/agent/sites", agentAuth, (req, res) => {
+  const target = agentTargetFor(req, res);
+  if (!target) {
+    res.status(404).json({ error: "account not found" });
+    return;
+  }
   const db = getDb();
   res.json({
-    sites: listStaticSitesForOwner(db, user.id).map((s) =>
-      siteView(s, user.username),
+    sites: listStaticSitesForOwner(db, target.user.id).map((s) =>
+      siteView(s, target.user.username),
     ),
     limit: STATIC_SITE_LIMIT,
   });
 });
 
 api.post("/agent/sites", agentAuth, async (req, res) => {
-  const { user } = res.locals.agent as AgentContext;
+  const target = agentTargetFor(req, res);
+  if (!target) {
+    res.status(404).json({ error: "account not found" });
+    return;
+  }
   await createSiteFor(
     res,
     {
-      id: user.id,
-      username: user.username,
-      kind: user.kind,
-      enabled: user.enabled,
+      id: target.user.id,
+      username: target.user.username,
+      kind: target.user.kind,
+      enabled: target.user.enabled,
     },
     (req.body ?? {}) as Record<string, unknown>,
   );
@@ -1596,10 +1737,10 @@ api.patch("/agent/sites/:id", agentAuth, async (req, res) => {
     res.status(400).json({ error: "invalid id" });
     return;
   }
-  const { user } = res.locals.agent as AgentContext;
   const db = getDb();
   const site = getStaticSiteById(db, id);
-  if (!site || site.owner_id !== user.id || site.owner_kind !== user.kind) {
+  const owner = site ? agentSiteTarget(res, site) : null;
+  if (!site || !owner) {
     res.status(404).json({ error: "static site not found" });
     return;
   }
@@ -1625,7 +1766,7 @@ api.patch("/agent/sites/:id", agentAuth, async (req, res) => {
   }
   const fresh = getStaticSiteById(db, id) as StaticSite;
   const sites = await reconcileSitesSafe();
-  res.json({ site: siteView(fresh, user.username), sites });
+  res.json({ site: siteView(fresh, owner.user.username), sites });
 });
 
 api.delete("/agent/sites/:id", agentAuth, async (req, res) => {
@@ -1634,16 +1775,112 @@ api.delete("/agent/sites/:id", agentAuth, async (req, res) => {
     res.status(400).json({ error: "invalid id" });
     return;
   }
-  const { user } = res.locals.agent as AgentContext;
   const db = getDb();
   const site = getStaticSiteById(db, id);
-  if (!site || site.owner_id !== user.id || site.owner_kind !== user.kind) {
+  if (!site || !agentSiteTarget(res, site)) {
     res.status(404).json({ error: "static site not found" });
     return;
   }
   deleteStaticSite(db, id);
   const sites = await reconcileSitesSafe();
   res.json({ ok: true, sites });
+});
+
+// Create a group owned by the token's user (apps-are-groups). Only a user
+// token may do this; the group is provisioned on the user's host immediately.
+api.post("/agent/groups", agentAuth, async (req, res) => {
+  const ctx = res.locals.agent as AgentContext;
+  if (ctx.tokenUser.kind !== "user") {
+    res.status(403).json({ error: "only a user token may create groups" });
+    return;
+  }
+  const { name } = (req.body ?? {}) as { name?: unknown };
+  if (!isProvisionableUsername(name)) {
+    res.status(400).json({ error: `invalid group name: ${LABEL_RULE}` });
+    return;
+  }
+  const db = getDb();
+  if (getUserByUsername(db, name)) {
+    res.status(409).json({ error: "name already exists" });
+    return;
+  }
+  if (getStaticSiteByLabel(db, name)) {
+    res.status(409).json({ error: "name collides with a static-site label" });
+    return;
+  }
+  if (countOwnedGroups(db, ctx.tokenUser.id) >= GROUP_LIMIT) {
+    res.status(409).json({ error: `at most ${GROUP_LIMIT} owned groups` });
+    return;
+  }
+  const own = ctx.targets.find((t) => t.role === "self");
+  if (!own) {
+    res.status(400).json({ error: "provision your own account before creating groups" });
+    return;
+  }
+  let group: User;
+  try {
+    group = createGroup(db, {
+      name,
+      ownerUserId: ctx.tokenUser.id,
+      passwordHash: await hashPassword(generatePassword()),
+    });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
+    ) {
+      res.status(409).json({ error: "name already exists" });
+      return;
+    }
+    throw err;
+  }
+  let provisioning: GroupProvisionResult;
+  try {
+    provisioning = await provisionGroup({
+      group,
+      hostId: own.account.host_id,
+      createdBy: ctx.tokenUser.id,
+    });
+  } catch (err) {
+    provisioning = {
+      ok: false,
+      jobId: 0,
+      status: "failed",
+      output: err instanceof Error ? err.message : "provisioning failed",
+    };
+  }
+  const fresh = getGroupById(db, group.id);
+  res.status(201).json({
+    group: fresh ? groupViewFrom(db, fresh, "owner") : null,
+    members: listGroupMembers(db, group.id),
+    provisioning,
+  });
+});
+
+// Admin: mint/rewrite the app-ops token for an existing provisioned account
+// (accounts created before the token step existed).
+api.post("/users/:id/agent-token", requireAuth, requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const target = getUserById(getDb(), id);
+  if (!target) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  try {
+    const result = await issueAgentToken({
+      user: { id: target.id, username: target.username },
+      createdBy: currentUser(res)?.id ?? null,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : "could not issue the token",
+    });
+  }
 });
 
 // --- Groups (accounts shared by members) ---

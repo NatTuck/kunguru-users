@@ -421,10 +421,11 @@ bind address; the app's UI shows their state and offers enable/disable/restart/
 logs. `HOST` is loopback when the account is on the gateway host and the host's
 VPN/LAN address otherwise.
 
-The skill also documents the agent API (`/api/agent/apps…` and
-`/api/agent/sites…`) and the per-account token in
-`~/.config/kunguru-agent.env`, so an agent can restart its app and manage its
-static sites without an operator.
+The skill also documents the agent API (`/api/agent/accounts`,
+`/api/agent/apps…`, `/api/agent/sites…`, `/api/agent/groups`) and the
+per-account token in `~/.config/kunguru-agent.env`, so an agent can discover the
+accounts it may manage, restart an app, manage static sites, and (with a user
+token) create a group — without an operator.
 
 `scripts/hermes/ensure.sh` installs this contract into every tenant as the
 `kunguru-sites` skill under `~/.hermes/skills/kunguru-custom/`, embedding the

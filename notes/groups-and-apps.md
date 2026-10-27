@@ -551,13 +551,20 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
   have the toggle (`POST /api/groups/:id/agent {enabled}`).
 - Disabling the group stops the agent (gateway + WebUI) but keeps
   `agent_enabled`; enabling the group restarts it only when the toggle is on.
-- **App-ops token.** Each account (group creation/re-provision) mints a random
-  bearer token; only its sha256 is stored (`accounts.agent_token_hash`). The
-  plaintext is written by `account/ensure-agent-token.sh` to
-  `~/.config/kunguru-agent.env` (0640 owner:group) with `KUNGURU_AGENT_TOKEN`
-  and `KUNGURU_API_URL`. For a group the group is the group's Linux group, so
-  the owner's **personal** agent (a group member) can read it and operate the
-  group's app even while the group's own agent is off.
+- **App-ops token.** Every account (user provisioning, group
+  creation/re-provision) mints a random bearer token; only its sha256 is stored
+  (`accounts.agent_token_hash`). The plaintext is written by
+  `account/ensure-agent-token.sh` to `~/.config/kunguru-agent.env` (0640
+  owner:group) with `KUNGURU_AGENT_TOKEN` and `KUNGURU_API_URL`. For a group the
+  group is the group's Linux group, so the owner's **personal** agent (a group
+  member) can read it too. Existing accounts mint theirs with
+  `POST /api/users/:id/agent-token` (admin).
+- **Agent identity/scope.** A **user** token acts on the user's own account and
+  every group the user belongs to; a **group** token acts only on that group.
+  `GET /api/agent/accounts` lists what the token can manage (role, host,
+  hostnames/ports, site count, agent state); `?account=<id|username>` selects
+  one on the app/site calls. `POST /api/agent/groups {name}` (user token only)
+  creates a group owned by the user, provisioned on the user's host.
 - **API**: `GET /api/agent/apps` (status), `POST /api/agent/apps/:slot`
   (`{"action":"restart"|"enable"|"disable"}`), `GET
   /api/agent/apps/:slot/logs?lines=N`; and static sites:
