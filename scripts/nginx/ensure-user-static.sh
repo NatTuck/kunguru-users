@@ -222,12 +222,15 @@ while IFS=$'\t' read -r owner label source served; do
   fi
   if [[ -n "$served" ]]; then
     if [[ ! -d "$served" ]]; then
-      install -d -m 2750 -o "$owner" -g "$owner" "$served"
+      install -d -m 2770 -o "$owner" -g "$owner" "$served"
       log "created ${served}"
     elif [[ "$(stat -c %u "$served")" == "0" ]]; then
       chown "$owner:$owner" "$served"
       log "fixed ownership: ${served}"
     fi
+    # A group's members (and the owner's personal agent) publish here; the
+    # www-data ACL still limits what nginx can read. Keep it group-writable.
+    chmod 2770 "$served" 2>/dev/null || true
   fi
   setfacl -m u:www-data:x "/home/${owner}"
   setfacl -m u:www-data:x "/home/${owner}/www"
