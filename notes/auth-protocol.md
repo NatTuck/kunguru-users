@@ -247,7 +247,8 @@ app.get("/private", (req, res) => {
   only its sha256 is stored and the plaintext lives in
   `~/.config/kunguru-agent.env` (0640 owner:group, so a group's owner can let
   their personal agent use it). It is scoped to that account's app slots
-  (status/restart/enable/disable/logs) and nothing else.
+  (status/restart/enable/disable/logs) and static sites
+  (list/create/patch/delete); nothing else.
 - **Signed identity (P3)**: `/internal/auth` mints the token; nginx forwards it
   as `X-Kunguru-Identity`; the public key is served at `/api/identity-key` and
   provisioned into the `kunguru-sites` skill. This is additive — apps that

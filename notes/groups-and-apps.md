@@ -560,6 +560,13 @@ broaden the cookie + enable optional auth); see `notes/auth-protocol.md`.
   group's app even while the group's own agent is off.
 - **API**: `GET /api/agent/apps` (status), `POST /api/agent/apps/:slot`
   (`{"action":"restart"|"enable"|"disable"}`), `GET
-  /api/agent/apps/:slot/logs?lines=N`, all with `Authorization: Bearer …`.
-  Scoped to the token's account's app slots; it is not a session and cannot
-  reach the rest of `/api`. Disabled/inactive accounts get 403.
+  /api/agent/apps/:slot/logs?lines=N`; and static sites:
+  `GET /api/agent/sites`, `POST /api/agent/sites`
+  (`{label, requireAuth?, anyAuthenticated?}`), `PATCH|DELETE
+  /api/agent/sites/:id` — all with `Authorization: Bearer …`. Scoped to the
+  token's account's app slots and sites (apex stays admin-only); it is not a
+  session and cannot reach the rest of `/api`. Disabled/inactive accounts get
+  403; another account's site is 404. Creating a site also creates
+  `~/sites/<label>`/`~/www/<label>` and the nginx route; the served docroot is
+  group-writable (ACL group entry + mask), so a group's members — including the
+  owner's personal agent — can publish there while nginx keeps read-only.
