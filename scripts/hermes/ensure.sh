@@ -583,7 +583,7 @@ cat > "$tmp_skill" <<'KUNGURU_SITES_SKILL'
 ---
 name: kunguru-sites
 description: "Deploy and host web apps and static sites for a kunguru tenant. The gateway nginx, TLS, DNS, and the user-server static nginx are managed centrally; you run your app on the app or app-dev port, or publish static files into ~/www/<label>."
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
@@ -681,12 +681,12 @@ Put production code in `~/.local/apps/app` and dev code in
 `~/.local/apps/app-dev`, and provide an executable `run` script in each slot.
 It must start your server on `$HOST:$PORT` (read them from the environment).
 The slot stays **inactive** until `run` exists and is executable, then enable or
-restart it from the app's **Your apps** panel, which also shows the unit state
-and recent logs.
+restart it from the app's **Your apps** panel (which also shows the unit state
+and recent logs), or with the agent API below.
 
 If the account is yours you can also use `systemctl --user status app` /
-`systemctl --user restart app`. Members of a group account use the app's panel:
-they have no login session as the group.
+`systemctl --user restart app`. Members of a group account use the app's panel
+or the API: they have no login session as the group.
 
 Do **not** edit the unit files: the platform manages them (ports, bind address,
 restart policy).
@@ -704,9 +704,39 @@ platform serves them with nginx on your host; you only publish files:
 - URL: `https://<label>.<base>/`
 
 Build into `~/www/<label>` (for example copy `dist/` or `book/` there). The
-platform creates the directory and the nginx route; ask the operator to add the
-static site (or use the app's self-service page when available). Do not run your
-own nginx or per-site vhosts.
+platform creates the directory and the nginx route when the site is created:
+use the app's self-service page, or create it with the agent API below (the
+operator can also add it). Do not run your own nginx or per-site vhosts.
+
+## Managing apps and sites via the API
+
+If `~/.config/kunguru-agent.env` exists (group accounts always have it; the
+group is group-readable, so the owner's personal agent can manage the group's
+app), it contains:
+
+```
+KUNGURU_AGENT_TOKEN=...
+KUNGURU_API_URL=https://users.<base>
+```
+
+Send `Authorization: Bearer $KUNGURU_AGENT_TOKEN` to:
+
+- `GET  $KUNGURU_API_URL/api/agent/apps` — app slot status;
+- `POST $KUNGURU_API_URL/api/agent/apps/app` with `{"action":"restart"}`
+  (or `enable` / `disable`) — app slot control;
+- `GET  $KUNGURU_API_URL/api/agent/apps/app/logs?lines=100` — recent logs;
+- `GET  $KUNGURU_API_URL/api/agent/sites` — list this account's static sites;
+- `POST $KUNGURU_API_URL/api/agent/sites` with
+  `{"label":"<label>","requireAuth":false}` — create a static site (also
+  creates `~/sites/<label>`, `~/www/<label>`, and the nginx route);
+- `PATCH $KUNGURU_API_URL/api/agent/sites/<id>` with `{"requireAuth":true}`
+  or `{"anyAuthenticated":true}` — change the site's auth scope;
+- `DELETE $KUNGURU_API_URL/api/agent/sites/<id>` — remove the route (files are
+  kept).
+
+The token is scoped to this account's app slots and sites; it is not a login
+session and cannot manage accounts. Apex sites (the base domain) are admin-only
+and cannot be created with this token.
 
 ## TLS, certificates, DNS
 

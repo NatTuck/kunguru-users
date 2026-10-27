@@ -1563,6 +1563,89 @@ api.get("/agent/apps/:slot/logs", agentAuth, async (req, res) => {
   }
 });
 
+// Agent-facing static-site management for the token's account. The account is
+// the site owner (a user, or a group whose members can read the token file).
+api.get("/agent/sites", agentAuth, (_req, res) => {
+  const { user } = res.locals.agent as AgentContext;
+  const db = getDb();
+  res.json({
+    sites: listStaticSitesForOwner(db, user.id).map((s) =>
+      siteView(s, user.username),
+    ),
+    limit: STATIC_SITE_LIMIT,
+  });
+});
+
+api.post("/agent/sites", agentAuth, async (req, res) => {
+  const { user } = res.locals.agent as AgentContext;
+  await createSiteFor(
+    res,
+    {
+      id: user.id,
+      username: user.username,
+      kind: user.kind,
+      enabled: user.enabled,
+    },
+    (req.body ?? {}) as Record<string, unknown>,
+  );
+});
+
+api.patch("/agent/sites/:id", agentAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const { user } = res.locals.agent as AgentContext;
+  const db = getDb();
+  const site = getStaticSiteById(db, id);
+  if (!site || site.owner_id !== user.id || site.owner_kind !== user.kind) {
+    res.status(404).json({ error: "static site not found" });
+    return;
+  }
+  const { requireAuth: required, anyAuthenticated } = (req.body ?? {}) as {
+    requireAuth?: unknown;
+    anyAuthenticated?: unknown;
+  };
+  if (required !== undefined && typeof required !== "boolean") {
+    res.status(400).json({ error: "requireAuth must be a boolean" });
+    return;
+  }
+  if (anyAuthenticated !== undefined && typeof anyAuthenticated !== "boolean") {
+    res.status(400).json({ error: "anyAuthenticated must be a boolean" });
+    return;
+  }
+  if (required === undefined && anyAuthenticated === undefined) {
+    res.status(400).json({ error: "requireAuth or anyAuthenticated is required" });
+    return;
+  }
+  if (typeof required === "boolean") setStaticSiteRequireAuth(db, id, required);
+  if (typeof anyAuthenticated === "boolean") {
+    setStaticSiteAnyAuthenticated(db, id, anyAuthenticated);
+  }
+  const fresh = getStaticSiteById(db, id) as StaticSite;
+  const sites = await reconcileSitesSafe();
+  res.json({ site: siteView(fresh, user.username), sites });
+});
+
+api.delete("/agent/sites/:id", agentAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const { user } = res.locals.agent as AgentContext;
+  const db = getDb();
+  const site = getStaticSiteById(db, id);
+  if (!site || site.owner_id !== user.id || site.owner_kind !== user.kind) {
+    res.status(404).json({ error: "static site not found" });
+    return;
+  }
+  deleteStaticSite(db, id);
+  const sites = await reconcileSitesSafe();
+  res.json({ ok: true, sites });
+});
+
 // --- Groups (accounts shared by members) ---
 //
 // A group is an account (users.kind='group') with an owner and members. The
