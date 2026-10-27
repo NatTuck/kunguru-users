@@ -337,6 +337,27 @@ session cookie is now `<base>`-wide, so do these in order:
   `GET/POST /api/agent/apps…`; the owner's personal agent can operate a group's
   app while the group agent is off.
 
+### Fleet repair (run after every deployment)
+
+`POST /api/users/repair` (admin) starts a serialized `account-repair` over every
+active user and group account; `GET /api/users/repair/status` reports progress.
+It is non-destructive and safe to run after every deploy:
+
+- app slots are ensured (dirs, units, ownership); a slot that is already running
+  is not restarted;
+- the app-ops token is minted **only when the account has none** — never rotated;
+- accounts with a configured agent get the current Hermes config/skill/identity
+  and the WebUI pin, with **no** Hermes update, **no** Bifrost key rotation,
+  **no** XMPP password change, and **no** start/restart of running units (the
+  WebUI restarts only if its checkout, requirements, or unit actually changed);
+- groups without an agent get only app slots (and a token if missing) and stay
+  off; configured-but-off group agents stay off.
+
+The first run on kunguru.net created the users' missing app slots and six agent
+tokens; repeat runs are idempotent (vk ids, token-file mtimes, and gateway/WebUI
+start times unchanged). Hermes **version** upgrades remain the separate fleet
+agent-update (`POST /api/users/update`).
+
 ## Upgrading tenant agents (Hermes / XMPP plugin / WebUI)
 
 `scripts/hermes/ensure.sh` converges each tenant's Hermes install, and
