@@ -237,6 +237,11 @@ while IFS=$'\t' read -r owner label source served; do
   setfacl -R -m u:www-data:rX "$served"
   # New files a build drops in stay readable without another reconcile.
   setfacl -d -m u:www-data:rX "$served"
+  # The owner's group publishes here (a group's members, and the owner's
+  # personal agent); keep the group entry and mask writable. The named
+  # www-data entry above stays read-only, so nginx is unaffected.
+  setfacl -R -m g::rwX "$served"
+  setfacl -d -m g::rwX "$served"
 done <"$tmp/dirs.tsv"
 
 if [[ "$listen" != "1" ]]; then
