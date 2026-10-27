@@ -159,7 +159,7 @@ fi
 if [[ "$action" == "start" ]]; then
   echo "[ok] starting hermes gateway for ${USERNAME}"
   run_as_user 'systemctl --user enable --now hermes-gateway' || exit 1
-  run_as_user 'systemctl --user enable --now hermes-xmpp-watchdog.timer' >/dev/null 2>&1 || true
+  if [[ "$action" != "repair" ]]; then run_as_user 'systemctl --user enable --now hermes-xmpp-watchdog.timer' >/dev/null 2>&1 || true; fi
   exit 0
 fi
 
@@ -473,19 +473,23 @@ if [[ -f "${home}/.hermes/.env" ]] && ! grep -q '^XMPP_OMEMO_ENABLED=' "${home}/
 fi
 
 # --- gateway service: ensure running, restart to apply config/env ---
-if run_as_user 'systemctl --user is-active hermes-gateway' >/dev/null 2>&1; then
-  echo "[changed] restarting hermes gateway for ${USERNAME}"
-  run_as_user 'systemctl --user restart hermes-gateway' >/dev/null
-else
-  echo "[changed] installing + starting hermes gateway for ${USERNAME}"
-  run_as_user 'hermes gateway install --start-on-login --start-now' \
-    >/dev/null 2>&1 || run_as_user 'systemctl --user enable --now hermes-gateway' >/dev/null
-fi
+# A repair converges files/config only: it never starts or restarts a running
+# agent (the toggle owns the running state), so this whole block is skipped.
+if [[ "$action" != "repair" ]]; then
+  if run_as_user 'systemctl --user is-active hermes-gateway' >/dev/null 2>&1; then
+    echo "[changed] restarting hermes gateway for ${USERNAME}"
+    run_as_user 'systemctl --user restart hermes-gateway' >/dev/null
+  else
+    echo "[changed] installing + starting hermes gateway for ${USERNAME}"
+    run_as_user 'hermes gateway install --start-on-login --start-now' \
+      >/dev/null 2>&1 || run_as_user 'systemctl --user enable --now hermes-gateway' >/dev/null
+  fi
 
-# Boot persistence is a hard requirement and linger alone does not provide it:
-# a manual start (or `hermes gateway install`) can leave the unit active but
-# DISABLED, and the restart branch above would never repair that. Always enable.
-run_as_user 'systemctl --user enable hermes-gateway' >/dev/null 2>&1 || true
+  # Boot persistence is a hard requirement and linger alone does not provide it:
+  # a manual start (or `hermes gateway install`) can leave the unit active but
+  # DISABLED, and the restart branch above would never repair that. Always enable.
+  run_as_user 'systemctl --user enable hermes-gateway' >/dev/null 2>&1 || true
+fi
 
 # --- XMPP reconnect-loop watchdog (user timer) ---
 # After an established XMPP session drops, the plugin's in-process reconnect can

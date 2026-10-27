@@ -17,6 +17,7 @@ import {
   getJobSteps,
   getUserById,
   listActiveAccountUsers,
+  listAllGroups,
   listGroupMembers,
   setAccountAgentEnabled,
   setAccountAgentInfo,
@@ -76,6 +77,10 @@ export const GROUP_HERMES_PROFILE = "group-hermes";
 // Group-agent toggle for an already-configured agent (no reconfiguration).
 export const GROUP_AGENT_START_PROFILE = "group-agent-start";
 export const AGENT_TOKEN_PROFILE = "agent-token";
+// Non-destructive converge: app slots, a token only if missing, and (for
+// configured agents) the current config/skill/WebUI pin — no key rotation, no
+// XMPP password change, no Hermes update, no start/restart of running units.
+export const REPAIR_PROFILE = "account-repair";
 export const GROUP_AGENT_STOP_PROFILE = "group-agent-stop";
 
 type StepTarget = "user-host" | "snikket-host";
@@ -144,6 +149,14 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
   // Mint/rewrite only the per-account app-ops token (existing accounts).
   [AGENT_TOKEN_PROFILE]: [
     { name: "agent-token", scriptRel: "account/ensure-agent-token.sh", target: "user-host" },
+  ],
+  // Repair/converge (see REPAIR_PROFILE): app slots always; hermes/webui only
+  // when the account has a configured agent. The token step is inserted by
+  // repairAccount only when the account has none yet.
+  [REPAIR_PROFILE]: [
+    { name: "app-slots", scriptRel: "account/ensure-apps.sh", target: "user-host" },
+    { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
+    { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
   ],
 };
 
@@ -437,6 +450,202 @@ export function startStandardAccountProvision(opts: {
   }).finally(() => inFlight.delete(opts.user.id));
 
   return { jobId };
+}
+
+/**
+ * Non-destructive repair of one account. Runs the current app-slots step, mints
+ * the app-ops token only when the account has none, and (for accounts with a
+ * configured agent) converges the Hermes config/skill/identity and the WebUI
+ * pin without updating Hermes, rotating the Bifrost key or XMPP password, or
+ * starting/restarting running units.
+ */
+async function repairAccount(opts: {
+  user: Pick<User, "id" | "username">;
+  account: Account;
+  host: Host;
+  createdBy: number | null;
+  jobId: number;
+  accountKind: "user" | "group";
+}): Promise<ProvisionResult> {
+  const db = getDb();
+  const defs: ProfileStepDef[] = [];
+  for (const def of PROFILES[REPAIR_PROFILE]) {
+    if (def.name === "app-slots") {
+      defs.push(def);
+    } else if (opts.account.bifrost_vk_id) {
+      // hermes/webui only for accounts that already have an agent; a group
+      // without an agent must not get one installed by a repair.
+      defs.push(def);
+    }
+  }
+  let agentToken: string | undefined;
+  let agentApiUrl: string | undefined;
+  if (opts.account.agent_token_hash == null) {
+    const minted = mintAgentToken(db, opts.account.id);
+    agentToken = minted.agentToken;
+    agentApiUrl = minted.agentApiUrl;
+    const tokenDef: ProfileStepDef = {
+      name: "agent-token",
+      scriptRel: "account/ensure-agent-token.sh",
+      target: "user-host",
+    };
+    const idx = defs.findIndex((d) => d.name === "hermes");
+    if (idx >= 0) defs.splice(idx, 0, tokenDef);
+    else defs.push(tokenDef);
+  }
+  return runJob({
+    user: opts.user,
+    createdBy: opts.createdBy,
+    profile: REPAIR_PROFILE,
+    jobHostId: opts.host.id,
+    jobId: opts.jobId,
+    steps: defs.map((def) => ({ def, host: opts.host })),
+    action: "repair",
+    accountKind: opts.accountKind,
+    model: opts.account.hermes_model ?? undefined,
+    webuiGroupMap:
+      opts.accountKind === "group"
+        ? JSON.stringify({ [opts.user.username]: "default" })
+        : undefined,
+    agentToken,
+    agentApiUrl,
+  });
+}
+
+/** Start a repair job for one account (user or group). Background; poll the job. */
+export function startAccountRepair(opts: {
+  user: Pick<User, "id" | "username">;
+  createdBy: number | null;
+}): { jobId: number } {
+  const db = getDb();
+  const account = getAccountForUser(db, opts.user.id);
+  if (!account) throw new Error("account is not provisioned");
+  if (account.status !== "active") throw new Error("account is not active");
+  const host = getHostById(db, account.host_id);
+  if (!host || !host.enabled) throw new Error("host not found or disabled");
+  if (inFlight.has(opts.user.id)) {
+    throw new Error("a provisioning run is already in progress for this account");
+  }
+  const row = getUserById(db, opts.user.id);
+  const jobId = createJob(db, {
+    hostId: host.id,
+    profile: REPAIR_PROFILE,
+    createdBy: opts.createdBy,
+  }).id;
+  inFlight.add(opts.user.id);
+  void repairAccount({
+    user: opts.user,
+    account,
+    host,
+    createdBy: opts.createdBy,
+    jobId,
+    accountKind: row?.kind ?? "user",
+  })
+    .catch((err) => console.error(`repair job ${jobId} failed:`, err))
+    .finally(() => inFlight.delete(opts.user.id));
+  return { jobId };
+}
+
+export interface FleetRepairState {
+  running: boolean;
+  total: number;
+  done: number;
+  current: string | null;
+  startedAt: number | null;
+  results: { username: string; jobId: number | null; status: string }[];
+}
+
+let fleetRepair: FleetRepairState = {
+  running: false,
+  total: 0,
+  done: 0,
+  current: null,
+  startedAt: null,
+  results: [],
+};
+
+export function getFleetRepairState(): FleetRepairState {
+  return fleetRepair;
+}
+
+/**
+ * Serialized fleet repair: every active user account plus every active group
+ * account. Groups without a configured agent only get app slots (and a token
+ * if missing); configured group agents are converged without being started or
+ * restarted. Safe to run after every deployment.
+ */
+export function startFleetRepair(opts: { createdBy: number | null }): {
+  started: boolean;
+  total: number;
+} {
+  if (fleetRepair.running) throw new Error("a fleet repair is already running");
+  const db = getDb();
+  const targets: { id: number; username: string; kind: "user" | "group" }[] = [];
+  const seen = new Set<number>();
+  for (const u of listActiveAccountUsers(db)) {
+    if (seen.has(u.id)) continue;
+    seen.add(u.id);
+    targets.push({ id: u.id, username: u.username, kind: "user" });
+  }
+  for (const g of listAllGroups(db, -1)) {
+    if (!g.enabled || seen.has(g.id)) continue;
+    const account = getAccountForUser(db, g.id);
+    if (!account || account.status !== "active") continue;
+    seen.add(g.id);
+    targets.push({ id: g.id, username: g.username, kind: "group" });
+  }
+  fleetRepair = {
+    running: true,
+    total: targets.length,
+    done: 0,
+    current: null,
+    startedAt: Date.now(),
+    results: [],
+  };
+  void (async () => {
+    for (const t of targets) {
+      fleetRepair.current = t.username;
+      if (inFlight.has(t.id)) {
+        fleetRepair.results.push({ username: t.username, jobId: null, status: "busy" });
+        fleetRepair.done += 1;
+        continue;
+      }
+      const account = getAccountForUser(db, t.id);
+      const host = account ? getHostById(db, account.host_id) : undefined;
+      if (!account || !host || account.status !== "active") {
+        fleetRepair.results.push({ username: t.username, jobId: null, status: "skipped" });
+        fleetRepair.done += 1;
+        continue;
+      }
+      let jobId: number | null = null;
+      try {
+        jobId = createJob(db, {
+          hostId: host.id,
+          profile: REPAIR_PROFILE,
+          createdBy: opts.createdBy,
+        }).id;
+        inFlight.add(t.id);
+        const res = await repairAccount({
+          user: { id: t.id, username: t.username },
+          account,
+          host,
+          createdBy: opts.createdBy,
+          jobId,
+          accountKind: t.kind,
+        });
+        fleetRepair.results.push({ username: t.username, jobId, status: res.status });
+      } catch (err) {
+        fleetRepair.results.push({ username: t.username, jobId, status: "error" });
+        console.error(`fleet repair ${t.username} failed:`, err);
+      } finally {
+        inFlight.delete(t.id);
+        fleetRepair.done += 1;
+      }
+    }
+    fleetRepair.running = false;
+    fleetRepair.current = null;
+  })();
+  return { started: true, total: targets.length };
 }
 
 /**

@@ -57,8 +57,11 @@ import {
 import {
   deactivateUserAccess,
   ensureGroupMembership,
+  getFleetRepairState,
   getFleetUpdateState,
   issueAgentToken,
+  startAccountRepair,
+  startFleetRepair,
   sendAgentXmppMessage,
   startAgentUpdate,
   startFleetAgentUpdate,
@@ -837,6 +840,53 @@ api.post("/users/update", requireAuth, requireAdmin, (_req, res) => {
 
 api.get("/users/update/status", requireAuth, requireAdmin, (_req, res) => {
   res.json(getFleetUpdateState());
+});
+
+// Non-destructive fleet repair: converge app slots, missing agent tokens, and
+// (for configured agents) the current config/skill/WebUI pin. No key rotation,
+// no XMPP password change, no Hermes update, no start/restart of running units.
+api.post("/users/repair", requireAuth, requireAdmin, (_req, res) => {
+  try {
+    const state = startFleetRepair({ createdBy: currentUser(res)?.id ?? null });
+    res.status(202).json(state);
+  } catch (err) {
+    res.status(409).json({
+      error: err instanceof Error ? err.message : "failed to start fleet repair",
+    });
+  }
+});
+
+api.get("/users/repair/status", requireAuth, requireAdmin, (_req, res) => {
+  res.json(getFleetRepairState());
+});
+
+// Repair one account (user or group).
+api.post("/users/:id/repair", requireAuth, requireAdmin, (req, res) => {
+  const id = parseId(req.params.id);
+  if (id == null) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const target = getUserById(getDb(), id);
+  if (!target) {
+    res.status(404).json({ error: "account not found" });
+    return;
+  }
+  if (!target.enabled) {
+    res.status(400).json({ error: "account is disabled; enable it first" });
+    return;
+  }
+  try {
+    const { jobId } = startAccountRepair({
+      user: { id: target.id, username: target.username },
+      createdBy: currentUser(res)?.id ?? null,
+    });
+    res.status(202).json({ jobId });
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : "could not start the repair",
+    });
+  }
 });
 
 // Reset password: rotates the shared web/XMPP password and re-syncs Snikket

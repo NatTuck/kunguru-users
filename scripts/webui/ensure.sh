@@ -97,6 +97,9 @@ if [[ "$action" == "start" ]]; then
   exit 0
 fi
 
+repair=0
+[[ "$action" == "repair" ]] && repair=1
+
 : "${WEBUI_PORT:?missing required env: WEBUI_PORT}"
 webui_host="${WEBUI_HOST:-127.0.0.1}"
 webui_proxies="${WEBUI_TRUSTED_PROXIES:-127.0.0.1/32}"
@@ -130,6 +133,10 @@ if [[ -z "$venv_py" || ! -x "$venv_py" ]]; then
 fi
 
 # --- clone or update the WebUI checkout ---
+repo_changed=0
+[[ -d "${repo_dir}/.git" ]] || repo_changed=1
+before_commit="$(run_as_user "git -C '${repo_dir}' rev-parse HEAD" 2>/dev/null || true)"
+before_req="$(sha256sum "${repo_dir}/requirements.txt" 2>/dev/null | cut -d' ' -f1 || true)"
 if [[ ! -d "${repo_dir}/.git" ]]; then
   echo "[changed] cloning hermes-webui for ${USERNAME} (${webui_ref})"
   install -d -o "$USERNAME" "${home}/.local/apps"
@@ -140,6 +147,11 @@ else
   # shallow clones can't fast-forward when history is rewritten.
   run_as_user "git -C '${repo_dir}' remote set-url origin '${webui_repo}' >/dev/null 2>&1 || true; git -C '${repo_dir}' fetch --depth 1 origin '${webui_ref}' >/dev/null 2>&1 && git -C '${repo_dir}' reset --hard FETCH_HEAD >/dev/null 2>&1 || true"
 fi
+after_commit="$(run_as_user "git -C '${repo_dir}' rev-parse HEAD" 2>/dev/null || true)"
+[[ "$before_commit" != "$after_commit" ]] && repo_changed=1
+after_req="$(sha256sum "${repo_dir}/requirements.txt" 2>/dev/null | cut -d' ' -f1 || true)"
+req_changed=0
+[[ "$before_req" != "$after_req" ]] && req_changed=1
 webui_commit="$(run_as_user "git -C '${repo_dir}' rev-parse --short HEAD" 2>/dev/null || true)"
 [[ -n "$webui_commit" ]] && echo "[ok] hermes-webui at ${webui_commit} (${webui_ref})"
 if [[ ! -f "${repo_dir}/server.py" ]]; then
@@ -150,15 +162,18 @@ fi
 # --- deps: the agent environment already carries pyyaml/cryptography; top up ---
 # uv moved with the PM layout (was ~/.hermes/bin/uv, now a store tool), so try
 # both before giving up.
-for uv in "${home}/.hermes/bin/uv" "${home}/.hermes/tools"/*/uv; do
-  if [[ -x "$uv" ]]; then
-    run_as_user "'${uv}' pip install --quiet --python '${venv_py}' -r '${repo_dir}/requirements.txt' >/dev/null 2>&1 || true"
-    break
-  fi
-done
+if (( repair == 0 )) || (( req_changed )); then
+  for uv in "${home}/.hermes/bin/uv" "${home}/.hermes/tools"/*/uv; do
+    if [[ -x "$uv" ]]; then
+      run_as_user "'${uv}' pip install --quiet --python '${venv_py}' -r '${repo_dir}/requirements.txt' >/dev/null 2>&1 || true"
+      break
+    fi
+  done
+fi
 
 # --- user systemd unit ---
 install -d "${home}/.config/systemd/user"
+before_unit="$(sha256sum "$unit" 2>/dev/null | cut -d' ' -f1 || true)"
 cat > "$unit" <<UNIT
 [Unit]
 Description=Hermes WebUI (${USERNAME})
@@ -187,11 +202,23 @@ RestartSec=5
 WantedBy=default.target
 UNIT
 chown "$USERNAME" "$unit"
+after_unit="$(sha256sum "$unit" 2>/dev/null | cut -d' ' -f1 || true)"
+unit_changed=0
+[[ "$before_unit" != "$after_unit" ]] && unit_changed=1
 run_as_user 'systemctl --user daemon-reload'
-if run_as_user 'systemctl --user is-active hermes-webui' >/dev/null 2>&1; then
-  run_as_user 'systemctl --user restart hermes-webui' >/dev/null
+if (( repair )); then
+  # Never start an off WebUI; restart a running one only when something changed.
+  if (( repo_changed || req_changed || unit_changed )); then
+    if run_as_user 'systemctl --user is-active hermes-webui' >/dev/null 2>&1; then
+      run_as_user 'systemctl --user restart hermes-webui' >/dev/null
+    fi
+  fi
 else
-  run_as_user 'systemctl --user enable --now hermes-webui' >/dev/null
+  if run_as_user 'systemctl --user is-active hermes-webui' >/dev/null 2>&1; then
+    run_as_user 'systemctl --user restart hermes-webui' >/dev/null
+  else
+    run_as_user 'systemctl --user enable --now hermes-webui' >/dev/null
+  fi
 fi
 
 sleep 3
