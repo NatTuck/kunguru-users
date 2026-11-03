@@ -15,6 +15,7 @@ import {
   getHostByName,
   getJob,
   getJobSteps,
+  getStaticSiteByLabel,
   getUserById,
   listActiveAccountUsers,
   listAllGroups,
@@ -36,6 +37,7 @@ import {
   PORT_APP,
   PORT_APP_DEV,
   PORT_HERMES_WEBUI,
+  DOCS_SITE_LABEL,
   PRIVATE_DOMAIN,
   SCRIPTS_DIR,
   SNIKKET_HOST_NAME,
@@ -52,6 +54,7 @@ import {
 import { getIdentitySigner } from "./identity";
 import { runRemote } from "./transport/run";
 import { reconcileSites } from "./nginx";
+import { staticSiteHost } from "./sites";
 import { APP_SLOTS, controlApp } from "./apps";
 
 export const STANDARD_ACCOUNT_PROFILE = "standard-account";
@@ -112,6 +115,7 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
     { name: "snikket-agent-account", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
     { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
+    { name: "soul-prefix", scriptRel: "hermes/ensure-soul-prefix.sh", target: "user-host" },
   ],
   [PASSWORD_SYNC_PROFILE]: [
     { name: "snikket-password", scriptRel: "snikket/ensure-account.sh", target: "snikket-host" },
@@ -131,6 +135,7 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
     { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
     { name: "soul", scriptRel: "hermes/ensure-soul.sh", target: "user-host" },
+    { name: "soul-prefix", scriptRel: "hermes/ensure-soul-prefix.sh", target: "user-host" },
   ],
   [AGENT_UPDATE_PROFILE]: [
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
@@ -157,6 +162,7 @@ export const PROFILES: Record<string, ProfileStepDef[]> = {
     { name: "app-slots", scriptRel: "account/ensure-apps.sh", target: "user-host" },
     { name: "hermes", scriptRel: "hermes/ensure.sh", target: "user-host" },
     { name: "webui", scriptRel: "webui/ensure.sh", target: "user-host" },
+    { name: "soul-prefix", scriptRel: "hermes/ensure-soul-prefix.sh", target: "user-host" },
   ],
 };
 
@@ -224,8 +230,21 @@ interface RunJobOpts {
 }
 
 /** Runs an ordered set of steps inline, persisting an audit job + step logs. */
+// The instance documentation URL, if a docs static site exists and its owner
+// is enabled. Generic across instances: the label comes from the instance
+// config (`docsSite`, default "docs").
+function docsSiteUrl(db: ReturnType<typeof getDb>): string {
+  if (!BASE_DOMAIN) return "";
+  const site = getStaticSiteByLabel(db, DOCS_SITE_LABEL);
+  if (!site) return "";
+  const owner = getUserById(db, site.owner_id);
+  if (!owner?.enabled) return "";
+  return `https://${staticSiteHost(site.label, site.apex === 1)}`;
+}
+
 async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
   const db = getDb();
+  const docsUrl = docsSiteUrl(db);
   const { user, password, createdBy, profile, jobHostId, steps } = opts;
   const jobId =
     opts.jobId ??
@@ -301,6 +320,8 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
         // Groups install the shared-session identity hook plugin; users do not.
         env.KUNGURU_ACCOUNT_KIND = opts.accountKind ?? "user";
         if (BASE_DOMAIN) env.KUNGURU_BASE_DOMAIN = BASE_DOMAIN;
+        env.KUNGURU_AUTH_HOST = PRIVATE_DOMAIN;
+        env.KUNGURU_DOCS_URL = docsUrl;
         env.KUNGURU_GATEWAY_WG_IP = GATEWAY_WG_IP;
         // Public verification key for X-Kunguru-Identity (not a secret).
         env.KUNGURU_IDENTITY_PUBKEY_DER = getIdentitySigner().publicKeyDer;
@@ -320,6 +341,15 @@ async function runJob(opts: RunJobOpts): Promise<ProvisionResult> {
       if (s.def.name === "soul") {
         env.KUNGURU_GROUP_MEMBERS = (opts.groupMembers ?? []).join(" ");
         env.KUNGURU_XMPP_DOMAIN = XMPP_DOMAIN;
+        if (BASE_DOMAIN) env.KUNGURU_BASE_DOMAIN = BASE_DOMAIN;
+        env.KUNGURU_AUTH_HOST = PRIVATE_DOMAIN;
+        env.KUNGURU_DOCS_URL = docsUrl;
+      }
+      if (s.def.name === "soul-prefix") {
+        if (BASE_DOMAIN) env.KUNGURU_BASE_DOMAIN = BASE_DOMAIN;
+        env.KUNGURU_AUTH_HOST = PRIVATE_DOMAIN;
+        env.KUNGURU_DOCS_URL = docsUrl;
+        env.KUNGURU_ACCOUNT_KIND = opts.accountKind ?? "user";
       }
       if (s.def.name === "webui") {
         // Per-account WebUI on `<account>-agent.<base>`: bound to the address

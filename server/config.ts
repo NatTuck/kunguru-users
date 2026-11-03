@@ -29,6 +29,8 @@ export interface InstanceConfig {
   cookieDomain: string;
   acmeEmail: string;
   sitesCert: string;
+  // Static-site label of the instance's documentation site (default "docs").
+  docsSite: string;
   gatewayWgIp: string;
   snikketHost: string;
   gatewayHost: string;
@@ -91,6 +93,10 @@ function validate(raw: unknown, source: string): InstanceConfig {
   // are known: it is required only when some host is not the app's own machine.
   const gatewayWgIp =
     typeof r.gatewayWgIp === "string" ? r.gatewayWgIp.trim() : "";
+  const docsSite =
+    typeof r.docsSite === "string" && r.docsSite.trim()
+      ? r.docsSite.trim()
+      : "docs";
   const snikketHost = str(r, "snikketHost", problems);
   const gatewayHost = str(r, "gatewayHost", problems);
   const xmppDomain = str(r, "xmppDomain", problems);
@@ -197,6 +203,7 @@ function validate(raw: unknown, source: string): InstanceConfig {
     cookieDomain,
     acmeEmail,
     sitesCert,
+    docsSite,
     gatewayWgIp,
     snikketHost,
     gatewayHost,

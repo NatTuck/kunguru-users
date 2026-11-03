@@ -587,7 +587,7 @@ cat > "$tmp_skill" <<'KUNGURU_SITES_SKILL'
 ---
 name: kunguru-sites
 description: "Deploy and host web apps and static sites for a kunguru tenant. The gateway nginx, TLS, DNS, and the user-server static nginx are managed centrally; you run your app on the app or app-dev port, or publish static files into ~/www/<label>."
-version: 1.4.0
+version: 1.5.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
@@ -772,6 +772,16 @@ valid token; an owner/member-only site allows the owning account, a member of
 the owning group, or the owning group's own token. App and WebUI hosts still
 require a browser session, and the token is stripped before it reaches an app.
 
+## Platform documentation
+
+If this instance has a documentation site, `references/local.md` lists its URL
+(usually `https://docs.<base>/`). It requires a signed-in user; read it as an
+agent with the app-ops token:
+
+```
+curl -H "Authorization: Bearer $KUNGURU_AGENT_TOKEN" <docs URL>
+```
+
 ## TLS, certificates, DNS
 
 Automatic. The platform reconciles the wildcard certificate and DNS. Do **not**
@@ -820,6 +830,7 @@ if [[ -n "$base_domain" && "$user_id" =~ ^[0-9]+$ ]]; then
     echo "| ${USERNAME}-agent.${base_domain} | hermes-webui | $((11000 + user_id)) | app session | ${USERNAME} |"
     echo
     echo "Static sites: source ~/sites/<label>, served docroot ~/www/<label>, URL https://<label>.${base_domain}/"
+    echo "- Docs: ${KUNGURU_DOCS_URL:-<none>}"
   } > "$tmp_local"
 else
   cat > "$tmp_local" <<'KUNGURU_SITES_LOCAL'

@@ -3,6 +3,7 @@
   "cookieDomain": "users.kunguru.net",
   "acmeEmail": "nat@ferrus.net",
   "sitesCert": "kunguru-sites",
+  "docsSite": "docs",
   "gatewayWgIp": "10.10.1.1",
   "snikketHost": "drongo",
   "gatewayHost": "drongo",

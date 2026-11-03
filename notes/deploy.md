@@ -448,6 +448,14 @@ per-account token in `~/.config/kunguru-agent.env`, so an agent can discover the
 accounts it may manage, restart an app, manage static sites, and (with a user
 token) create a group — without an operator.
 
+Every account's `SOUL.md` also gets a platform-managed block
+(`scripts/hermes/ensure-soul-prefix.sh`, run by the standard/group-hermes
+profiles and the fleet repair): it names the platform-managed `kunguru-sites`
+skill, the `<base>` auth host, and the instance docs URL. The block is
+regenerated from the instance config (`docsSite`, default `docs`) and the DB;
+the tenant's own SOUL content below it is preserved, and a group roster rewrite
+(`ensure-soul.sh`) embeds the same block.
+
 `scripts/hermes/ensure.sh` installs this contract into every tenant as the
 `kunguru-sites` skill under `~/.hermes/skills/kunguru-custom/`, embedding the
 skill body (the transport pipes a single script over stdin) and generating

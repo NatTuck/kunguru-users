@@ -19,6 +19,9 @@ export const SCRIPTS_DIR =
 // Host name that runs Snikket (target for the snikket profile step).
 export const SNIKKET_HOST_NAME = config.snikketHost;
 
+// Static-site label of the instance documentation (e.g. docs.<base>).
+export const DOCS_SITE_LABEL = config.docsSite;
+
 // Public DNS base for every account/site hostname.
 export const BASE_DOMAIN = config.domain;
 
