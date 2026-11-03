@@ -251,6 +251,11 @@ app.get("/private", (req, res) => {
   covers app slots (status/restart/enable/disable/logs), static sites
   (list/create/patch/delete), account discovery (`GET /api/agent/accounts`), and
   — user tokens only — group creation (`POST /api/agent/groups`); nothing else.
+  The same token may also **read static sites** through the gateway: nginx
+  forwards `Authorization` to `/internal/auth`, which falls back to the token
+  only for `static` targets (never app/WebUI hosts), applies the site's access
+  rules (`any_authenticated`, owner, group member, or the owning group's token),
+  and strips the header before proxying.
 - **Signed identity (P3)**: `/internal/auth` mints the token; nginx forwards it
   as `X-Kunguru-Identity`; the public key is served at `/api/identity-key` and
   provisioned into the `kunguru-sites` skill. This is additive — apps that

@@ -181,6 +181,10 @@ auth_location = """    location = /__auth {{
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header X-Original-Host $host;
+        # The agent bearer fallback: /internal/auth may authenticate a static
+        # site with the per-account app-ops token. It is stripped from the
+        # upstream request below, so it never reaches a tenant app.
+        proxy_set_header Authorization $http_authorization;
     }}
 """.format(auth_pass=auth_pass)
 
@@ -207,6 +211,7 @@ proxy_body = """    location / {
         proxy_set_header Remote-Groups $auth_groups;
         proxy_set_header X-Kunguru-Identity $kunguru_identity;
         proxy_set_header Cookie $kunguru_cookie;
+        proxy_set_header Authorization "";
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $kunguru_connection;
         proxy_http_version 1.1;

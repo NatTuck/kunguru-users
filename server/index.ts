@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { chmodSync, existsSync, lstatSync, unlinkSync } from "node:fs";
 import express, { type Request, type Response } from "express";
@@ -6,6 +7,7 @@ import ViteExpress from "vite-express";
 import {
   ensureAdminSeed,
   ensureHostSeed,
+  getAccountByAgentTokenHash,
   getApexStaticSite,
   getDb,
   getStaticSiteByLabel,
@@ -154,25 +156,84 @@ function handleInternalAuth(req: Request, res: Response): void {
 
   // Read-only check (no global sweep); sliding expiry is throttled internally.
   const ctx = resolveSession(req, { sweep: false, touch: true });
-  if (!ctx) {
-    if (required) {
+  if (ctx) {
+    if (required && !targetAllows(db, target, ctx.user.id)) {
       res.status(401).end();
       return;
     }
-    // Optional auth: anonymous is allowed; no identity headers.
-    res.setHeader("Cache-Control", "no-store");
-    res.status(200).end();
+    sendIdentity(res, ctx.user.username, ctx.user.id, originalHost);
     return;
   }
 
-  if (required && !targetAllows(db, target, ctx.user.id)) {
+  // Agent fallback: a per-account app-ops token may read *static sites* (never
+  // app/WebUI hosts) when the site's auth rules allow that account. The token
+  // is forwarded to this subrequest by nginx and stripped before proxying, so
+  // it never reaches a tenant app.
+  const token = bearerToken(req);
+  if (token) {
+    const account = getAccountByAgentTokenHash(
+      db,
+      createHash("sha256").update(token).digest("hex"),
+    );
+    const user = account ? getUserById(db, account.user_id) : undefined;
+    if (
+      account &&
+      user &&
+      user.enabled &&
+      account.status === "active" &&
+      target.kind === "static" &&
+      tokenAllows(db, target, user)
+    ) {
+      sendIdentity(res, user.username, user.id, originalHost);
+      return;
+    }
+  }
+
+  if (required) {
     res.status(401).end();
     return;
   }
-
-  const groups = listGroupNamesForUser(db, ctx.user.id);
+  // Optional auth: anonymous is allowed; no identity headers.
   res.setHeader("Cache-Control", "no-store");
-  res.setHeader("X-Auth-User", ctx.user.username);
+  res.status(200).end();
+}
+
+function bearerToken(req: Request): string | undefined {
+  const header = req.headers.authorization;
+  if (typeof header !== "string" || !header.startsWith("Bearer ")) {
+    return undefined;
+  }
+  const token = header.slice(7).trim();
+  return token || undefined;
+}
+
+// Static-site access for an agent token: any signed-in account for
+// `any_authenticated`; otherwise the account's user must own the site, be a
+// member of the owning group, or *be* the owning group (a group token).
+function tokenAllows(
+  db: ReturnType<typeof getDb>,
+  target: Extract<AuthTarget, { kind: "static" }>,
+  user: User,
+): boolean {
+  if (target.site.any_authenticated === 1) return true;
+  if (target.owner.kind === "group") {
+    return (
+      target.owner.id === user.id ||
+      isGroupMember(db, target.owner.id, user.id)
+    );
+  }
+  return target.owner.id === user.id;
+}
+
+function sendIdentity(
+  res: Response,
+  username: string,
+  userId: number,
+  originalHost: string | undefined,
+): void {
+  const groups = listGroupNamesForUser(getDb(), userId);
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Auth-User", username);
   res.setHeader("X-Auth-Groups", groups.join(","));
   // The unforgeable form of the same identity: a per-request, audience-bound,
   // short-lived token. nginx forwards it as X-Kunguru-Identity.
@@ -180,7 +241,7 @@ function handleInternalAuth(req: Request, res: Response): void {
   if (aud) {
     res.setHeader(
       "X-Auth-Jwt",
-      getIdentitySigner().sign({ aud, sub: ctx.user.username, grp: groups }),
+      getIdentitySigner().sign({ aud, sub: username, grp: groups }),
     );
   }
   res.status(200).end();

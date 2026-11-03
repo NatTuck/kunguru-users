@@ -587,7 +587,7 @@ cat > "$tmp_skill" <<'KUNGURU_SITES_SKILL'
 ---
 name: kunguru-sites
 description: "Deploy and host web apps and static sites for a kunguru tenant. The gateway nginx, TLS, DNS, and the user-server static nginx are managed centrally; you run your app on the app or app-dev port, or publish static files into ~/www/<label>."
-version: 1.3.0
+version: 1.4.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
@@ -757,6 +757,20 @@ Send `Authorization: Bearer $KUNGURU_AGENT_TOKEN` on every call. The token is
 scoped to the accounts above; it is not a login session and cannot manage
 accounts. Apex sites (the base domain) are admin-only and cannot be created
 with this token.
+
+### Reading authenticated static sites as an agent
+
+The same token authenticates **static sites** at the gateway, so an agent can
+read a login-required site without a browser session:
+
+```
+curl -H "Authorization: Bearer $KUNGURU_AGENT_TOKEN" https://<label>.<base>/
+```
+
+The site's auth rules still apply: a public or any-signed-in site allows any
+valid token; an owner/member-only site allows the owning account, a member of
+the owning group, or the owning group's own token. App and WebUI hosts still
+require a browser session, and the token is stripped before it reaches an app.
 
 ## TLS, certificates, DNS
 
