@@ -29,42 +29,24 @@ hermes_home="${home}/.hermes"
 soul="${hermes_home}/SOUL.md"
 
 base="${KUNGURU_BASE_DOMAIN:-}"
-auth="${KUNGURU_AUTH_HOST:-}"
-if [[ -z "$auth" && -n "$base" ]]; then
-  auth="users.${base}"
-fi
-docs="${KUNGURU_DOCS_URL:-}"
 kind="${KUNGURU_ACCOUNT_KIND:-user}"
 
-# The account's group is its own for users, the shared group for groups.
 account_line="This account runs on the Kunguru platform."
 if [[ "$kind" == "group" ]]; then
   account_line="This is a shared group account on the Kunguru platform."
 fi
-
-block="# kunguru platform"
+header="# Kunguru platform"
 if [[ -n "$base" ]]; then
-  block="# Kunguru platform (${base})"
-else
-  block="# Kunguru platform"
+  header="# Kunguru platform (${base})"
 fi
-block+=$'\n\n'
-block+="${account_line} Platform-managed skills:"$'\n'
-block+="- \`kunguru-sites\` — hosting/deployment and the"
-if [[ -n "$auth" ]]; then
-  block+=" \`${auth}\`"
-fi
-block+=" agent API (token in \`~/.config/kunguru-agent.env\`)."$'\n'
-if [[ -n "$docs" ]]; then
-  block+=$'\n'
-  block+="Instance docs: ${docs} (login required; agents can read it with the app-ops token)."$'\n'
-fi
-block+=$'\n'
-block+="Tenant-specific skills and notes may follow; the platform-managed skill is"$'\n'
-block+="authoritative for hosting and the API."
 
 managed="<!-- kunguru:platform:begin -->
-${block}
+${header}
+
+${account_line}
+
+To manage websites and apps, you must load the \`kunguru-sites\` skill and
+follow the procedures therein.
 <!-- kunguru:platform:end -->"
 
 if [[ ! -d "$hermes_home" ]]; then

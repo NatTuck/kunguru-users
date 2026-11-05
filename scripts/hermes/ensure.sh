@@ -587,7 +587,7 @@ cat > "$tmp_skill" <<'KUNGURU_SITES_SKILL'
 ---
 name: kunguru-sites
 description: "Deploy and host web apps and static sites for a kunguru tenant. The gateway nginx, TLS, DNS, and the user-server static nginx are managed centrally; you run your app on the app or app-dev port, or publish static files into ~/www/<label>."
-version: 1.5.0
+version: 1.6.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
@@ -711,6 +711,43 @@ Build into `~/www/<label>` (for example copy `dist/` or `book/` there). The
 platform creates the directory and the nginx route when the site is created:
 use the app's self-service page, or create it with the agent API below (the
 operator can also add it). Do not run your own nginx or per-site vhosts.
+
+## Group apps: manage as a group member
+
+A group app is a Linux account: the owner and members are in the Linux group
+named after the app (`ops`, `ndinda-operations`, ...). The app's service runs as
+that group's Linux user, but people and their agents manage the files **as
+members of the group**.
+
+If you are a member's agent (not the group's own agent), run file operations
+through the group:
+
+```
+sg <group> -c 'cd /home/<group>/sites/<app> && ...'
+```
+
+Use it for editing/building source, creating directories, publishing static
+files, and writing the `run` script. The group's own agent already runs as the
+group user and needs no `sg`. The app-slot and static directories are setgid
+`2770`/`2775`, so new entries normally inherit the group anyway; `sg` makes it
+explicit and covers paths outside those trees. Add `umask 002` inside the `sg`
+command when group write is needed.
+
+**The invariant is the group, not the owner.** `ls -ld` / `stat -c '%U:%G'`
+must show the app's group on directories and files. A **mix of user owners**
+(`nat`, `ndinda`, ...) is fine as long as the app user can read, execute, or
+write what it needs. Do **not** `chown -R` the tree to the group user; fix only
+practical problems, for example:
+
+- a `0600` file the app user cannot read -> `chmod 0640` (group read);
+- a file or directory with the wrong group -> `chgrp <group>` (or recreate it
+  with `sg`);
+- a `run` script the app user cannot execute -> group execute;
+- a tool that insists on being the file owner -> coordinate owners or make the
+  path group-writable.
+
+App-slot control (start/stop/restart/logs) is the agent API or the "Your apps"
+panel, not `sg`.
 
 ## Managing apps and sites via the API
 

@@ -61,34 +61,18 @@ if [[ -z "$roster" ]]; then
 fi
 
 base="${KUNGURU_BASE_DOMAIN:-}"
-auth="${KUNGURU_AUTH_HOST:-}"
-if [[ -z "$auth" && -n "$base" ]]; then
-  auth="users.${base}"
-fi
-docs="${KUNGURU_DOCS_URL:-}"
 header="# Kunguru platform"
 if [[ -n "$base" ]]; then
   header="# Kunguru platform (${base})"
 fi
-api_part="the agent API"
-if [[ -n "$auth" ]]; then
-  api_part="the \`${auth}\` agent API"
-fi
 platform_block="<!-- kunguru:platform:begin -->
 ${header}
 
-This is a shared group account on the Kunguru platform. Platform-managed skills:
-- \`kunguru-sites\` — hosting/deployment and ${api_part} (token in \`~/.config/kunguru-agent.env\`)."
-if [[ -n "$docs" ]]; then
-  platform_block+=$'\n'
-  platform_block+="Instance docs: ${docs} (login required; agents can read it with the app-ops token)."
-fi
-platform_block+=$'\n'
-platform_block+="Tenant-specific skills and notes may follow; the platform-managed skill is"
-platform_block+=$'\n'
-platform_block+="authoritative for hosting and the API."
-platform_block+=$'\n'
-platform_block+="<!-- kunguru:platform:end -->"
+This is a shared group account on the Kunguru platform.
+
+To manage websites and apps, you must load the \`kunguru-sites\` skill and
+follow the procedures therein.
+<!-- kunguru:platform:end -->"
 
 soul="$(cat <<EOF
 ${platform_block}
